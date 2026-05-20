@@ -1,0 +1,14 @@
+.env
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+.DS_Store
+gateway_old.py
+
+models/*.tflite
+!models/.gitkeep
+
+/var/lib/solar-tracker/
+buffer.db
