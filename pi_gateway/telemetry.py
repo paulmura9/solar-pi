@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import config
+
 # Servo angle bounds (degrees); the ESP32 mechanism spans this range.
 ANGLE_MIN_DEG = 0
 ANGLE_MAX_DEG = 180
@@ -20,13 +22,30 @@ TELEMETRY_OPTIONAL_RANGES = {
     "battery_voltage": (0, 15),
     "battery_percent": (0, 100),
     "solar_voltage": (0, 30),
-    "solar_current": (0, 10),
-    "solar_power": (0, 300),
+}
+
+# Clamp-then-validate fields (SI units). A small-negative reading within the
+# negative deadband is clamped to the noise floor rather than rejected, so sensor
+# noise near zero never drops the whole packet.
+TELEMETRY_CLAMP_RANGES = {
+    "solar_current": (config.SOLAR_CURRENT_MIN_A, config.SOLAR_CURRENT_MAX_A),
+    "solar_power": (config.SOLAR_POWER_MIN_W, config.SOLAR_POWER_MAX_W),
+}
+
+# Optional non-negative accumulator fields (no fixed upper bound), checked when
+# present. Maps field name -> minimum allowed value.
+TELEMETRY_NONNEGATIVE_MINIMUMS = {
+    "solar_energy_today_wh": config.SOLAR_ENERGY_TODAY_MIN_WH,
 }
 
 
 def validate_telemetry(data: dict[str, Any]) -> tuple[bool, str]:
-    """Return (is_valid, reason). Reason is "ok" when valid."""
+    """Validate telemetry, clamping near-zero sensor noise in-place.
+
+    Returns (is_valid, reason); reason is "ok" when valid. solar_current and
+    solar_power are clamped (not rejected) when a small-negative noise reading
+    falls within their negative deadband, so angles/LDR/battery are preserved.
+    """
     for field in REQUIRED_ANGLE_FIELDS:
         if field not in data:
             return False, f"missing field: {field}"
@@ -41,6 +60,25 @@ def validate_telemetry(data: dict[str, Any]) -> tuple[bool, str]:
         if value is None:
             continue
         if not isinstance(value, (int, float)) or not low <= value <= high:
+            return False, f"{field_name} out of range: {value}"
+
+    # Clamp-then-validate: reject only readings outside [MIN, MAX]; clamp a
+    # small-negative deadband reading up to the noise floor in-place so the
+    # forwarded packet carries the corrected value and is never dropped for noise.
+    for field_name, (low, high) in TELEMETRY_CLAMP_RANGES.items():
+        value = data.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)) or not low <= value <= high:
+            return False, f"{field_name} out of range: {value}"
+        if value < config.TELEMETRY_NOISE_CLAMP_FLOOR:
+            data[field_name] = config.TELEMETRY_NOISE_CLAMP_FLOOR
+
+    for field_name, minimum in TELEMETRY_NONNEGATIVE_MINIMUMS.items():
+        value = data.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, (int, float)) or value < minimum:
             return False, f"{field_name} out of range: {value}"
 
     return True, "ok"

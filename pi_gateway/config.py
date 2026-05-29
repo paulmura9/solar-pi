@@ -95,3 +95,17 @@ CAMERA_LOCK_TIMEOUT_S = 20.0
 
 # Storage object-key prefix for manual captures: captures/<timestamp>_<id>.jpg
 STORAGE_CAPTURE_PREFIX = "captures"
+
+# --- Telemetry sensor validation (SI units) -----------------------------------
+# solar_current (Amperes) and solar_power (Watts) are clamp-then-validate: a
+# small-negative reading (sensor noise near zero) is clamped to the noise floor
+# instead of dropping the whole packet; only readings outside [MIN, MAX] are
+# rejected. The panel is ~0.35 A / ~4.2 W rated, so the maxima leave headroom.
+TELEMETRY_NOISE_CLAMP_FLOOR = 0.0
+SOLAR_CURRENT_MIN_A = -0.5
+SOLAR_CURRENT_MAX_A = 2.0
+SOLAR_POWER_MIN_W = -0.5
+SOLAR_POWER_MAX_W = 5.0
+# Daily energy accumulator (Wh). Non-negative with no fixed upper bound, since it
+# grows over the day and resets externally; only negatives are rejected.
+SOLAR_ENERGY_TODAY_MIN_WH = 0.0
