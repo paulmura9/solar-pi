@@ -2,6 +2,7 @@
 paho-mqtt==2.1.0
 supabase==2.30.0
 python-dotenv==1.2.2
+websockets==14.2
 
 # Hardware (provided by system via --system-site-packages):
 #   picamera2, opencv (python3-opencv), numpy

@@ -12,3 +12,9 @@ models/*.tflite
 
 /var/lib/solar-tracker/
 buffer.db
+
+.claude/
+.mcp.json
+CLAUDE.md
+SKILL.md
+AGENTS.md
