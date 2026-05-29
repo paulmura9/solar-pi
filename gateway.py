@@ -6,6 +6,7 @@ import os
 import random
 import signal
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -59,6 +60,11 @@ WS_RECONNECT_JITTER_FACTOR = 0.3
 BUFFER_FLUSH_BATCH_SIZE = 100
 BUFFER_CLEANUP_INTERVAL_S = 3600
 WS_SHUTDOWN_TIMEOUT_S = 5.0
+
+# Max number of MQTT messages queued for asyncio processing at once. Beyond
+# this, incoming MQTT messages are dropped to prevent unbounded memory growth
+# when the WebSocket is down and the offline buffer cannot keep up.
+MQTT_INFLIGHT_LIMIT = 1000
 
 
 def log(level: str, event: str, **fields: Any) -> None:
@@ -169,6 +175,21 @@ class OfflineBuffer:
 
 
 def validate_telemetry(data: dict[str, Any]) -> tuple[bool, str]:
+    """
+    Permissive Pi-side validation.
+
+    Required fields (horizontal_angle, vertical_angle) are bounds-checked to
+    catch obvious firmware bugs early. Optional fields with known sane ranges
+    (battery, solar) are bounds-checked when present. Other fields pass
+    through untouched.
+
+    Strict schema validation against the device_commands and sensor_readings
+    tables is the backend's responsibility (Zod schemas in src/ws/schemas.ts
+    and src/validators/). The Pi is a forwarder, not the schema authority.
+
+    This split is deliberate: re-validating the full schema on the Pi would
+    duplicate logic and create a second source of truth that can drift.
+    """
     for field in ("horizontal_angle", "vertical_angle"):
         if field not in data:
             return False, f"missing field: {field}"
@@ -240,9 +261,15 @@ class WebSocketClient:
         return self._ws is not None
 
     def stop(self) -> None:
+        """Signal the run loop to exit on next iteration.
+
+        The actual WebSocket close happens naturally when `_receive_loop`
+        returns and the `async with` block in `_connect_and_serve` exits.
+        We avoid `asyncio.create_task` here because `stop()` may be called
+        from a signal handler in a context where the event loop is not
+        guaranteed to accept new task creation.
+        """
         self._stop_event.set()
-        if self._ws is not None:
-            asyncio.create_task(self._ws.close(code=1001, reason="shutdown"))
 
     async def run(self) -> None:
         backoff = WS_RECONNECT_MIN_DELAY_S
@@ -255,6 +282,8 @@ class WebSocketClient:
                 log("error", "ws_handshake_rejected", status=err.status_code)
             except (OSError, asyncio.TimeoutError, ConnectionClosed) as err:
                 log("warning", "ws_connection_lost", error=str(err))
+            except asyncio.CancelledError:
+                raise
             except Exception as err:
                 log("error", "ws_unexpected_error", error=str(err))
 
@@ -306,15 +335,32 @@ class WebSocketClient:
             self._ws = ws
             log("info", "ws_connected", url=self._url)
 
+            flush_task: Optional[asyncio.Task[None]] = None
             try:
                 await self._send_sync_request()
-                await self._flush_buffer()
+                # Flush buffer in background so command reception is not
+                # blocked by a large buffer drain after a long outage.
+                flush_task = asyncio.create_task(self._flush_buffer())
                 await self._receive_loop()
             finally:
+                if flush_task is not None and not flush_task.done():
+                    flush_task.cancel()
+                    try:
+                        await flush_task
+                    except asyncio.CancelledError:
+                        pass
                 self._ws = None
                 log("info", "ws_disconnected")
 
     async def _send_sync_request(self) -> None:
+        """
+        Notify the backend of the last command_id processed before this connection.
+
+        `_last_command_id` is in-memory only. A Pi restart resets it to None, and
+        the backend will not replay older commands (their 50s PENDING timeout has
+        elapsed). This is acceptable: motor commands have short temporal validity
+        and replaying minutes-old commands after a restart is unsafe.
+        """
         await self._ws.send(  # type: ignore[union-attr]
             json.dumps(
                 _build_envelope(
@@ -326,24 +372,27 @@ class WebSocketClient:
 
     async def _flush_buffer(self) -> None:
         total_sent = 0
-        while True:
-            batch = await self._buffer.get_pending(BUFFER_FLUSH_BATCH_SIZE)
-            if not batch:
-                break
-
-            for msg_id, payload_json in batch:
-                if self._ws is None:
-                    return
-                try:
-                    await self._ws.send(payload_json)
-                    await self._buffer.mark_sent(msg_id)
-                    total_sent += 1
-                except ConnectionClosed:
-                    log("warning", "buffer_flush_interrupted", flushed=total_sent)
-                    return
-
-        if total_sent > 0:
-            log("info", "buffer_flushed", count=total_sent)
+        try:
+            while True:
+                batch = await self._buffer.get_pending(BUFFER_FLUSH_BATCH_SIZE)
+                if not batch:
+                    break
+                for msg_id, payload_json in batch:
+                    if self._ws is None:
+                        return
+                    try:
+                        await self._ws.send(payload_json)
+                        await self._buffer.mark_sent(msg_id)
+                        total_sent += 1
+                    except ConnectionClosed:
+                        log("warning", "buffer_flush_interrupted", flushed=total_sent)
+                        return
+        except asyncio.CancelledError:
+            log("info", "buffer_flush_cancelled", flushed=total_sent)
+            raise
+        finally:
+            if total_sent > 0:
+                log("info", "buffer_flushed", count=total_sent)
 
     async def _receive_loop(self) -> None:
         if self._ws is None:
@@ -400,6 +449,13 @@ class MQTTBridge:
         self._on_event = on_event
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
+        # Backpressure: counter of MQTT messages currently queued for asyncio
+        # processing. Protected by a threading.Lock because `_on_message` is
+        # called from the paho MQTT thread, and the decrement happens in the
+        # asyncio thread via `_wrap_handler`.
+        self._inflight_count = 0
+        self._inflight_lock = threading.Lock()
+
         self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if username:
             self._client.username_pw_set(username, password)
@@ -453,22 +509,55 @@ class MQTTBridge:
         if self._loop is None or not self._loop.is_running():
             return
 
+        # Backpressure guard: drop messages if too many are already queued
+        # for asyncio processing. Prevents unbounded memory growth when the
+        # WebSocket is down and the offline buffer cannot drain in time.
+        with self._inflight_lock:
+            if self._inflight_count >= MQTT_INFLIGHT_LIMIT:
+                log(
+                    "warning",
+                    "mqtt_backpressure_drop",
+                    topic=msg.topic,
+                    inflight=self._inflight_count,
+                )
+                return
+            self._inflight_count += 1
+
         try:
             data = json.loads(msg.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as err:
             log("warning", "mqtt_invalid_payload", topic=msg.topic, error=str(err))
+            self._release_inflight_slot()
             return
 
         if not isinstance(data, dict):
             log("warning", "mqtt_payload_not_object", topic=msg.topic)
+            self._release_inflight_slot()
             return
 
         handler = self._handler_for(msg.topic)
         if handler is None:
             log("warning", "mqtt_unknown_topic", topic=msg.topic)
+            self._release_inflight_slot()
             return
 
-        asyncio.run_coroutine_threadsafe(handler(data), self._loop)
+        asyncio.run_coroutine_threadsafe(
+            self._wrap_handler(handler, data), self._loop
+        )
+
+    async def _wrap_handler(
+        self, handler: MqttHandler, data: dict[str, Any]
+    ) -> None:
+        """Invoke the asyncio handler and decrement the inflight counter."""
+        try:
+            await handler(data)
+        finally:
+            self._release_inflight_slot()
+
+    def _release_inflight_slot(self) -> None:
+        with self._inflight_lock:
+            if self._inflight_count > 0:
+                self._inflight_count -= 1
 
     def _handler_for(self, topic: str) -> Optional[MqttHandler]:
         if topic == MQTT_TOPIC_TELEMETRY:
@@ -521,14 +610,18 @@ class SolarGateway:
 
         log("info", "gateway_stopping")
 
+        # Signal then cancel: setting the event lets the WS loop exit cleanly
+        # if it is between iterations; cancel breaks it out of any reconnect
+        # sleep or pending await.
         self._ws.stop()
+        ws_task.cancel()
         heartbeat_task.cancel()
         cleanup_task.cancel()
 
         try:
             await asyncio.wait_for(ws_task, timeout=WS_SHUTDOWN_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            log("warning", "ws_shutdown_timeout")
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
         self._mqtt.stop()
         log("info", "gateway_stopped")
@@ -543,16 +636,58 @@ class SolarGateway:
         await self._ws.send_or_buffer(message)
 
     async def _forward_ack(self, data: dict[str, Any]) -> None:
+        """Forward an ESP32 ACK to the cloud as a sanitized envelope.
+
+        Wire contract:
+          - `commandId` (required, string)
+          - `status` (required, ACKNOWLEDGED or FAILED)
+          - `error_message` (optional, only on FAILED, string)
+          - `ack_payload` (optional, dict; ESP32 extras like current angles)
+
+        Any unknown fields the ESP32 includes are forwarded under
+        `ack_payload` for the backend to persist in the `ack_payload`
+        column. Reserved keys are excluded to avoid duplication at the top
+        level of the envelope payload.
+        """
         command_id = data.get("commandId")
         status = data.get("status")
 
-        if not command_id or not status:
-            log("warning", "ack_incomplete", data=data)
+        if not isinstance(command_id, str) or not command_id:
+            log("warning", "ack_missing_command_id", data=data)
             return
 
-        message = _build_envelope("command_ack", data)
-        await self._ws.send_or_buffer(message)
-        log("info", "command_acked", command_id=command_id, status=status)
+        if status not in ("ACKNOWLEDGED", "FAILED"):
+            log(
+                "warning",
+                "ack_invalid_status",
+                status=status,
+                command_id=command_id,
+            )
+            return
+
+        ws_payload: dict[str, Any] = {
+            "commandId": command_id,
+            "status": status,
+        }
+
+        message_field = data.get("message")
+        if status == "FAILED" and isinstance(message_field, str):
+            ws_payload["error_message"] = message_field
+
+        reserved = {"commandId", "status", "message"}
+        extra = {k: v for k, v in data.items() if k not in reserved}
+        if extra:
+            ws_payload["ack_payload"] = extra
+
+        envelope = _build_envelope("command_ack", ws_payload)
+        await self._ws.send_or_buffer(envelope)
+        log(
+            "info",
+            "command_acked",
+            command_id=command_id,
+            status=status,
+            has_ack_payload=bool(extra),
+        )
 
     async def _forward_event(self, data: dict[str, Any]) -> None:
         message = _build_envelope("esp32_event", data)
@@ -580,7 +715,7 @@ class SolarGateway:
                 {
                     "commandId": command_id,
                     "status": "FAILED",
-                    "message": "MQTT publish failed on gateway",
+                    "error_message": "MQTT publish failed on gateway",
                 },
             )
             await self._ws.send_or_buffer(failure_ack)
