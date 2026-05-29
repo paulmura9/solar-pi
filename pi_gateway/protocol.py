@@ -17,17 +17,18 @@ Outbound message types:
   - "sync_request"    payload = {"last_command_id": <id|null>}
   - "command_ack"     payload = {commandId, status, error_message?, ack_payload?}
                       ESP32-bound command completion and local dispatch failures.
-  - "capture_result"  payload = {commandId, status, image_path, width, height,
-                      captured_at} on success, or {commandId, status,
-                      error_message} on failure.
+  - "camera_capture_result"  payload = {command_id, status, image_path, width,
+                      height, captured_at} on success (status "SUCCESS"), or
+                      {command_id, status, error_message} on failure
+                      (status "FAILED").
 
-CONTRACT NOTE (capture_result): this message is defined here because the Express
-side of the contract is not present in this repo. Express's /ws/device handler
-MUST consume "capture_result" with the identical shape: on ACKNOWLEDGED, INSERT a
-camera_captures row (command_id, image_path, width, height, captured_at) and set
-device_commands -> ACKNOWLEDGED; on FAILED, set device_commands -> FAILED with
-error_message. The Pi never writes these tables itself.
-TODO(express): implement the matching "capture_result" handler in /ws/device.
+CONTRACT NOTE (camera_capture_result): this message is defined here because the
+Express side of the contract is not present in this repo. Express's /ws/device
+handler routes on the exact type "camera_capture_result" and strictly validates
+the payload: on "SUCCESS", INSERT a camera_captures row (command_id, image_path,
+width, height, captured_at) and set device_commands -> ACKNOWLEDGED; on "FAILED",
+set device_commands -> FAILED with error_message. The Pi never writes these
+tables itself.
 """
 from __future__ import annotations
 
@@ -48,10 +49,14 @@ MSG_TYPE_TELEMETRY = "telemetry"
 MSG_TYPE_ESP32_EVENT = "esp32_event"
 MSG_TYPE_HEARTBEAT = "heartbeat"
 MSG_TYPE_COMMAND_ACK = "command_ack"
-MSG_TYPE_CAPTURE_RESULT = "capture_result"
+# Express routes the capture result only on this exact discriminator string.
+MSG_TYPE_CAPTURE_RESULT = "camera_capture_result"
 
 # device_commands.status values (the DB write is performed by Express).
+# STATUS_ACKNOWLEDGED is the ESP32-ACK / command_ack success value; the capture
+# result uses STATUS_CAPTURE_SUCCESS, which Express's success branch expects.
 STATUS_ACKNOWLEDGED = "ACKNOWLEDGED"
+STATUS_CAPTURE_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
 
 # Keys consumed directly from a raw ESP32 ACK; everything else is forwarded to
@@ -127,8 +132,8 @@ def build_capture_success(
     return build_envelope(
         MSG_TYPE_CAPTURE_RESULT,
         {
-            "commandId": command_id,
-            "status": STATUS_ACKNOWLEDGED,
+            "command_id": command_id,
+            "status": STATUS_CAPTURE_SUCCESS,
             "image_path": image_path,
             "width": width,
             "height": height,
@@ -142,7 +147,7 @@ def build_capture_failure(command_id: str, error_message: str) -> dict[str, Any]
     return build_envelope(
         MSG_TYPE_CAPTURE_RESULT,
         {
-            "commandId": command_id,
+            "command_id": command_id,
             "status": STATUS_FAILED,
             "error_message": error_message,
         },
