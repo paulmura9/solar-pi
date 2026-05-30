@@ -59,7 +59,10 @@ class SolarGateway:
 
     async def run(self) -> None:
         log("info", "gateway_starting", device_id=config.DEVICE_ID, ws_url=config.EXPRESS_WS_URL)
-        self._start_camera_best_effort()
+        if config.VISION_ENABLED:
+            self._start_camera_best_effort()
+        else:
+            log("info", "vision_disabled", reason="VISION_ENABLED=false; camera left free for external use")
 
         loop = asyncio.get_running_loop()
         self._mqtt.start(loop)

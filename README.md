@@ -40,3 +40,5 @@ Interactive tool to capture labelled dirt-detection images on the Pi. Run it on 
 ```bash
    python dataset/capture_dataset.py
 ```
+
+The Pi camera is exclusive (one process at a time). To collect a dataset while the gateway runs, start the gateway with `VISION_ENABLED=false` so it never opens the camera (everything else — WS, MQTT, command forwarding, telemetry, heartbeat — keeps working): `VISION_ENABLED=false python gateway.py`.

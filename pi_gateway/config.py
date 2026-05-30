@@ -96,6 +96,19 @@ CAMERA_LOCK_TIMEOUT_S = 20.0
 # Storage object-key prefix for manual captures: captures/<timestamp>_<id>.jpg
 STORAGE_CAPTURE_PREFIX = "captures"
 
+# Vision subsystem toggle. When false, the gateway never opens the camera (no
+# periodic capture, no stream), leaving the exclusive Pi camera free for the
+# offline dataset-collection script (dataset/capture_dataset.py). Every other
+# path is unaffected: WebSocket, MQTT bridge, command forwarding to the ESP32,
+# telemetry, ACKs, heartbeat. Fail-safe default: anything other than an explicit
+# off-value keeps vision enabled, so a typo never silently disables the camera.
+VISION_ENABLED = os.getenv("VISION_ENABLED", "true").strip().lower() not in (
+    "false",
+    "0",
+    "no",
+    "off",
+)
+
 # --- Telemetry sensor validation (SI units) -----------------------------------
 # solar_current (Amperes) and solar_power (Watts) are clamp-then-validate: a
 # small-negative reading (sensor noise near zero) is clamped to the noise floor
