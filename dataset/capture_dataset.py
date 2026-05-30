@@ -14,10 +14,10 @@ Workflow
 
 Design choices that match the gateway's verified hardware behaviour
 -------------------------------------------------------------------
-- Full sensor resolution, no crop. The ROI is applied later in preprocessing,
-  so the raw dataset keeps the whole frame. The native size is read from
-  ``Picamera2.sensor_resolution`` at runtime rather than hardcoded, so this
-  works on whatever sensor the Pi has without a magic number.
+- Full field of view, no crop, captured at ``CAPTURE_SIZE``. The Pi 3B cannot
+  allocate the IMX708 full sensor readout (4608x2592 -> ENOMEM at camera
+  start), so the 2x2-binned 2304x1296 mode is used: same whole-frame FOV, lower
+  resolution. The ROI is applied later in preprocessing, not here.
 - picamera2's format string does not reliably match numpy channel order on the
   Pi: the array comes out RGB-ordered, so it is converted to BGR before OpenCV
   encodes it (same reasoning as pi_gateway/camera_manager.py).
@@ -42,6 +42,12 @@ VALID_CLASSES = ("clean", "slightly_dirty", "dirty")
 
 # picamera2 yields RGB-ordered arrays on this Pi; OpenCV needs BGR for encoding.
 CAMERA_PIXEL_FORMAT = "BGR888"
+
+# Capture size. The Pi 3B cannot allocate buffers for the IMX708 full sensor
+# readout (4608x2592 -> ENOMEM at camera start), so we use the 2x2-binned mode.
+# This is still the FULL field of view (no crop), just at lower resolution; the
+# ROI is applied later in preprocessing. Matches the gateway's CAMERA_RESOLUTION.
+CAPTURE_SIZE = (2304, 1296)
 
 # Higher than the gateway's live-capture quality (90): this is archival training
 # data that may be cropped/recompressed downstream, so we keep more detail now.
@@ -118,9 +124,8 @@ def _open_camera() -> Iterator[Picamera2]:
         raise SystemExit(f"camera unavailable: {exc}") from exc
 
     try:
-        native_resolution = camera.sensor_resolution  # full frame, no crop
         still_config = camera.create_still_configuration(
-            main={"size": native_resolution, "format": CAMERA_PIXEL_FORMAT}
+            main={"size": CAPTURE_SIZE, "format": CAMERA_PIXEL_FORMAT}
         )
         camera.configure(still_config)
         camera.start()
@@ -128,7 +133,7 @@ def _open_camera() -> Iterator[Picamera2]:
         camera.close()
         raise SystemExit(f"camera start failed: {exc}") from exc
 
-    print(f"camera started at {native_resolution[0]}x{native_resolution[1]} (full frame)")
+    print(f"camera started at {CAPTURE_SIZE[0]}x{CAPTURE_SIZE[1]} (full frame)")
     try:
         yield camera
     finally:
