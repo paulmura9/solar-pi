@@ -33,3 +33,10 @@ ESP32 ──MQTT──► Pi (this) ──WSS──► Express ──HTTPS──
 - Structured JSON logging
 - Heartbeat every 30 seconds
 - Computer vision pipeline for dirt detection (planned)
+
+## Dataset collection
+
+Interactive tool to capture labelled dirt-detection images on the Pi. Run it on the device and follow the prompts (session id + class, then ENTER to capture / `q` to quit). Images are saved under `dataset/raw/{session_id}/{class}/` and logged to `dataset/manifest.csv`:
+```bash
+   python dataset/capture_dataset.py
+```
