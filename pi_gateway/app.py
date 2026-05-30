@@ -141,7 +141,10 @@ class SolarGateway:
                 await asyncio.sleep(config.WS_HEARTBEAT_INTERVAL_S)
                 if self._ws.is_connected:
                     await self._ws.send(
-                        protocol.build_envelope(protocol.MSG_TYPE_HEARTBEAT, {})
+                        protocol.build_envelope(
+                            protocol.MSG_TYPE_HEARTBEAT,
+                            {"camera_ok": self._camera.is_ok()},
+                        )
                     )
         except asyncio.CancelledError:
             pass

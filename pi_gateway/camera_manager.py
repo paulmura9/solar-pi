@@ -71,6 +71,15 @@ class CameraManager:
             self._camera = camera
             log("info", "camera_started", resolution=list(self._resolution))
 
+    def is_ok(self) -> bool:
+        """Whether the camera is initialized and usable.
+
+        True once start() has succeeded, False if init failed or the sensor was
+        released. Read without the lock so a health probe (e.g. the heartbeat)
+        never blocks behind an in-progress capture; the reference read is atomic.
+        """
+        return self._camera is not None
+
     def stop(self) -> None:
         """Stop and release the sensor. Idempotent and lock-guarded."""
         with self._locked():
