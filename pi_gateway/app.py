@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import uuid
 from typing import Any, Optional
 
 from . import config, protocol
 from .camera_manager import CameraError, CameraManager
-from .capture import capture_and_upload
+from .capture import capture_and_upload, send_capture_success
 from .dispatcher import CommandDispatcher
 from .logging_utils import log
 from .mqtt_bridge import MQTTBridge
@@ -221,6 +222,15 @@ class SolarGateway:
             log("warning", "vision_capture_failed", error=str(exc))
             return
 
+        # Behave exactly like a successful manual capture: emit the
+        # camera_capture_result first (so the single captured/uploaded frame shows
+        # in the frontend's "Last Captured Image", which reads this message, not
+        # vision_results) using a generated command_id, reusing the same upload
+        # path and builder. Sent before inference so a failed model run still
+        # leaves the capture visible. The image_path is shared by both messages.
+        command_id = str(uuid.uuid4())
+        await send_capture_success(command_id, result, self._ws.send_or_buffer)
+
         try:
             vision_result = await detect_and_report(
                 self._vision,
@@ -236,6 +246,7 @@ class SolarGateway:
         log(
             "info",
             "vision_cycle_done",
+            command_id=command_id,
             image_path=result["image_path"],
             predicted_class=vision_result.predicted_class,
             dirt_level_percent=vision_result.dirt_level_percent,

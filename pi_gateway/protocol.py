@@ -158,6 +158,7 @@ def build_capture_failure(command_id: str, error_message: str) -> dict[str, Any]
 
 
 def build_vision_result(
+    predicted_class: str,
     dirt_level_percent: float,
     cleanliness_percent: float,
     cleaning_required: bool,
@@ -170,12 +171,14 @@ def build_vision_result(
 
     Express routes on the exact type "vision_result", uploads nothing itself, and
     INSERTs a vision_results row from this payload. Field names mirror the
-    vision_results columns; processed_image_path is None until overlay images are
-    produced (single-tenant project, so no user_id - see CLAUDE.md).
+    vision_results columns; predicted_class is one of clean|slightly_dirty|dirty;
+    processed_image_path is None until overlay images are produced (single-tenant
+    project, so no user_id - see CLAUDE.md).
     """
     return build_envelope(
         MSG_TYPE_VISION_RESULT,
         {
+            "predicted_class": predicted_class,
             "dirt_level_percent": dirt_level_percent,
             "cleanliness_percent": cleanliness_percent,
             "cleaning_required": cleaning_required,

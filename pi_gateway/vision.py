@@ -194,6 +194,7 @@ async def detect_and_report(
     result = await asyncio.to_thread(detector.predict, frame_bgr)
     await ws_send(
         protocol.build_vision_result(
+            predicted_class=result.predicted_class,
             dirt_level_percent=result.dirt_level_percent,
             cleanliness_percent=result.cleanliness_percent,
             cleaning_required=result.cleaning_required,

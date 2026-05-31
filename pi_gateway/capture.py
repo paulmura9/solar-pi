@@ -73,6 +73,28 @@ def capture_and_upload(
     }
 
 
+async def send_capture_success(
+    command_id: str, result: dict[str, Any], ws_send: WsSender
+) -> None:
+    """Send a camera_capture_result SUCCESS for an already captured+uploaded frame.
+
+    Shared by the manual CAPTURE_IMAGE handler and the periodic vision loop so the
+    builder and message shape are identical. The loop emits this in addition to
+    the vision_result so an automatic capture also appears in the frontend's "Last
+    Captured Image", which reads camera_capture_result, not vision_results.
+    `result` is the dict returned by capture_and_upload.
+    """
+    await ws_send(
+        protocol.build_capture_success(
+            command_id,
+            result["image_path"],
+            result["width"],
+            result["height"],
+            result["captured_at"],
+        )
+    )
+
+
 async def handle_capture_image(
     command_id: str,
     camera: CameraManager,
@@ -110,15 +132,7 @@ async def handle_capture_image(
         width=result["width"],
         height=result["height"],
     )
-    await ws_send(
-        protocol.build_capture_success(
-            command_id,
-            result["image_path"],
-            result["width"],
-            result["height"],
-            result["captured_at"],
-        )
-    )
+    await send_capture_success(command_id, result, ws_send)
 
     # Best-effort dirt detection on the same frame: the manual capture has
     # already succeeded above, so an inference failure must not change its
