@@ -4,5 +4,10 @@ supabase==2.30.0
 python-dotenv==1.2.2
 websockets==14.2
 
+# Edge dirt-detection TFLite runtime (maintained successor to tflite-runtime).
+# Confirm the pin matches the version validated via inference/predict_dirt.py
+# and that an aarch64 wheel installs on the Pi (`pip show ai-edge-litert`).
+ai-edge-litert==1.2.0
+
 # Hardware (provided by system via --system-site-packages):
 #   picamera2, opencv (python3-opencv), numpy

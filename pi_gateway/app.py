@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from typing import Any
+from typing import Any, Optional
 
 from . import config, protocol
 from .camera_manager import CameraError, CameraManager
+from .capture import capture_and_upload
 from .dispatcher import CommandDispatcher
 from .logging_utils import log
 from .mqtt_bridge import MQTTBridge
 from .offline_buffer import OfflineBuffer
 from .storage import StorageClient
 from .telemetry import validate_telemetry
+from .vision import DirtDetector, VisionError, detect_and_report
 from .ws_client import WebSocketClient
 
 
@@ -46,13 +48,31 @@ class SolarGateway:
         )
         self._camera = CameraManager()
         self._storage = StorageClient.from_config()
+        self._vision = self._load_vision()
         self._dispatcher = CommandDispatcher(
             mqtt=self._mqtt,
             camera=self._camera,
             storage=self._storage,
+            vision=self._vision,
             ws_send=self._ws.send_or_buffer,
         )
         self._stop_event = asyncio.Event()
+
+    @staticmethod
+    def _load_vision() -> Optional[DirtDetector]:
+        """Load the dirt detector once, best-effort.
+
+        Returns None when vision is disabled or the model cannot be loaded, so a
+        missing/invalid model never blocks the gateway (telemetry, commands, and
+        manual captures keep working - just without dirt detection).
+        """
+        if not config.VISION_ENABLED:
+            return None
+        try:
+            return DirtDetector.from_config()
+        except VisionError as exc:
+            log("error", "vision_model_unavailable", error=str(exc))
+            return None
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -70,6 +90,11 @@ class SolarGateway:
         ws_task = asyncio.create_task(self._ws.run())
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         cleanup_task = asyncio.create_task(self._cleanup_loop())
+        # The periodic dirt-detection loop only runs when the model is loaded
+        # (which already implies VISION_ENABLED and an open camera).
+        vision_task: Optional[asyncio.Task[None]] = None
+        if self._vision is not None:
+            vision_task = asyncio.create_task(self._vision_loop())
 
         await self._stop_event.wait()
 
@@ -81,6 +106,8 @@ class SolarGateway:
         ws_task.cancel()
         heartbeat_task.cancel()
         cleanup_task.cancel()
+        if vision_task is not None:
+            vision_task.cancel()
 
         try:
             await asyncio.wait_for(ws_task, timeout=config.WS_SHUTDOWN_TIMEOUT_S)
@@ -161,6 +188,59 @@ class SolarGateway:
                     log("info", "buffer_cleaned", removed=removed)
         except asyncio.CancelledError:
             pass
+
+    async def _vision_loop(self) -> None:
+        """Periodic edge dirt detection: capture -> infer -> upload -> report.
+
+        A failed cycle (camera busy, capture/upload error, inference error) logs a
+        warning and is retried on the next interval; it never tears down the loop.
+        """
+        try:
+            while True:
+                await asyncio.sleep(config.VISION_CAPTURE_INTERVAL_S)
+                await self._run_vision_cycle()
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_vision_cycle(self) -> None:
+        """Run one capture+inference cycle. Never raises; logs and returns on error."""
+        if self._vision is None:  # defensive: the loop only starts when loaded
+            return
+
+        # Capture + upload share the manual-capture pipeline (same CameraManager
+        # lock serializes against manual captures; uploads under the "vision/"
+        # prefix). Bounded by the same timeout so a wedged capture cannot stall.
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    capture_and_upload, self._camera, self._storage, config.STORAGE_VISION_PREFIX
+                ),
+                timeout=config.CAPTURE_TIMEOUT_S,
+            )
+        except Exception as exc:
+            log("warning", "vision_capture_failed", error=str(exc))
+            return
+
+        try:
+            vision_result = await detect_and_report(
+                self._vision,
+                result["frame"],
+                result["image_path"],
+                result["captured_at"],
+                self._ws.send_or_buffer,
+            )
+        except Exception as exc:
+            log("warning", "vision_inference_failed", image_path=result["image_path"], error=str(exc))
+            return
+
+        log(
+            "info",
+            "vision_cycle_done",
+            image_path=result["image_path"],
+            predicted_class=vision_result.predicted_class,
+            dirt_level_percent=vision_result.dirt_level_percent,
+            cleaning_required=vision_result.cleaning_required,
+        )
 
 
 async def main() -> None:

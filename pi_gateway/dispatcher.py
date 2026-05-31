@@ -10,7 +10,7 @@ Routes commands received from Express (over the WebSocket) by command_type:
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 from . import protocol
 from .camera_manager import CameraManager
@@ -18,6 +18,7 @@ from .capture import handle_capture_image
 from .logging_utils import log
 from .mqtt_bridge import MQTTBridge
 from .storage import StorageClient
+from .vision import DirtDetector
 
 WsSender = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -28,11 +29,13 @@ class CommandDispatcher:
         mqtt: MQTTBridge,
         camera: CameraManager,
         storage: StorageClient,
+        vision: Optional[DirtDetector],
         ws_send: WsSender,
     ) -> None:
         self._mqtt = mqtt
         self._camera = camera
         self._storage = storage
+        self._vision = vision
         self._ws_send = ws_send
 
     async def dispatch(self, message: dict[str, Any]) -> None:
@@ -50,7 +53,7 @@ class CommandDispatcher:
         if command_type == protocol.CMD_CAPTURE_IMAGE:
             # Handled locally on the Pi; NOT forwarded to the ESP32 over MQTT.
             await handle_capture_image(
-                command_id, self._camera, self._storage, self._ws_send
+                command_id, self._camera, self._storage, self._ws_send, self._vision
             )
             return
 

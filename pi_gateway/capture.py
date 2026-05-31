@@ -2,16 +2,20 @@
 
 Captures one full frame, encodes JPEG, uploads it to Supabase Storage, and
 reports the result back to Express over the WebSocket. No DB writes (Express
-persists camera_captures and updates device_commands), no ML, no crop, no
-overlay. The whole capture+upload runs under a timeout and never hangs; on any
-failure a capture_result FAILED message is sent so Express can mark the command
-FAILED.
+persists camera_captures and updates device_commands), no crop, no overlay. The
+whole capture+upload runs under a timeout and never hangs; on any failure a
+capture_result FAILED message is sent so Express can mark the command FAILED.
+
+When the dirt detector is loaded, the manual capture additionally runs inference
+on the same frame and emits a vision_result (best-effort, in addition to the
+unchanged camera_capture_result) so a frontend-triggered capture also passes
+through the model.
 """
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 import cv2
 
@@ -19,6 +23,7 @@ from . import config, protocol
 from .camera_manager import CameraError, CameraManager
 from .logging_utils import log
 from .storage import StorageClient
+from .vision import DirtDetector, detect_and_report
 
 WsSender = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -35,13 +40,19 @@ def _encode_jpeg(frame) -> bytes:
     return buffer.tobytes()
 
 
-def _capture_and_upload(
-    camera: CameraManager, storage: StorageClient, command_id: str
+def capture_and_upload(
+    camera: CameraManager,
+    storage: StorageClient,
+    object_prefix: str,
+    name_suffix: str = "",
 ) -> dict[str, Any]:
     """Blocking capture -> encode -> upload pipeline. Run in a worker thread.
 
-    Ensures the camera is started (idempotent) so a sensor that was unavailable
-    at boot can still recover for a later capture.
+    Shared by the manual CAPTURE_IMAGE handler (prefix "captures", suffix the
+    command id) and the periodic vision loop (prefix "vision", no suffix). The
+    captured BGR frame is returned so the caller can run inference on it without
+    a second capture. Ensures the camera is started (idempotent) so a sensor that
+    was unavailable at boot can still recover for a later capture.
     """
     camera.start()
     frame, width, height = camera.capture_full_frame()
@@ -49,8 +60,8 @@ def _capture_and_upload(
 
     captured_at = datetime.now(timezone.utc)
     object_path = (
-        f"{config.STORAGE_CAPTURE_PREFIX}/"
-        f"{captured_at.strftime(_OBJECT_TIMESTAMP_FORMAT)}_{command_id}.jpg"
+        f"{object_prefix}/"
+        f"{captured_at.strftime(_OBJECT_TIMESTAMP_FORMAT)}{name_suffix}.jpg"
     )
     storage.upload_jpeg(object_path, jpeg)
     return {
@@ -58,6 +69,7 @@ def _capture_and_upload(
         "width": width,
         "height": height,
         "captured_at": captured_at.isoformat(),
+        "frame": frame,
     }
 
 
@@ -66,11 +78,18 @@ async def handle_capture_image(
     camera: CameraManager,
     storage: StorageClient,
     ws_send: WsSender,
+    vision: Optional[DirtDetector],
 ) -> None:
     """Handle one CAPTURE_IMAGE command end-to-end. Never raises; always reports."""
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_capture_and_upload, camera, storage, command_id),
+            asyncio.to_thread(
+                capture_and_upload,
+                camera,
+                storage,
+                config.STORAGE_CAPTURE_PREFIX,
+                f"_{command_id}",
+            ),
             timeout=config.CAPTURE_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
@@ -99,4 +118,25 @@ async def handle_capture_image(
             result["height"],
             result["captured_at"],
         )
+    )
+
+    # Best-effort dirt detection on the same frame: the manual capture has
+    # already succeeded above, so an inference failure must not change its
+    # outcome - it only means no extra vision_result is emitted.
+    if vision is None:
+        return
+    try:
+        vision_result = await detect_and_report(
+            vision, result["frame"], result["image_path"], result["captured_at"], ws_send
+        )
+    except Exception as exc:
+        log("warning", "manual_vision_failed", command_id=command_id, error=str(exc))
+        return
+    log(
+        "info",
+        "manual_vision_done",
+        command_id=command_id,
+        predicted_class=vision_result.predicted_class,
+        dirt_level_percent=vision_result.dirt_level_percent,
+        cleaning_required=vision_result.cleaning_required,
     )

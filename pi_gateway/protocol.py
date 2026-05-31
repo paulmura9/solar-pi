@@ -51,6 +51,9 @@ MSG_TYPE_HEARTBEAT = "heartbeat"
 MSG_TYPE_COMMAND_ACK = "command_ack"
 # Express routes the capture result only on this exact discriminator string.
 MSG_TYPE_CAPTURE_RESULT = "camera_capture_result"
+# Edge dirt-detection result (periodic ML loop + manual capture). Maps to the
+# vision_results table, which Express persists; the Pi never writes it directly.
+MSG_TYPE_VISION_RESULT = "vision_result"
 
 # device_commands.status values (the DB write is performed by Express).
 # STATUS_ACKNOWLEDGED is the ESP32-ACK / command_ack success value; the capture
@@ -150,6 +153,36 @@ def build_capture_failure(command_id: str, error_message: str) -> dict[str, Any]
             "command_id": command_id,
             "status": STATUS_FAILED,
             "error_message": error_message,
+        },
+    )
+
+
+def build_vision_result(
+    dirt_level_percent: float,
+    cleanliness_percent: float,
+    cleaning_required: bool,
+    confidence: float,
+    image_path: str,
+    processed_image_path: Optional[str],
+    captured_at: str,
+) -> dict[str, Any]:
+    """Build a vision_result envelope (no DB write happens on the Pi).
+
+    Express routes on the exact type "vision_result", uploads nothing itself, and
+    INSERTs a vision_results row from this payload. Field names mirror the
+    vision_results columns; processed_image_path is None until overlay images are
+    produced (single-tenant project, so no user_id - see CLAUDE.md).
+    """
+    return build_envelope(
+        MSG_TYPE_VISION_RESULT,
+        {
+            "dirt_level_percent": dirt_level_percent,
+            "cleanliness_percent": cleanliness_percent,
+            "cleaning_required": cleaning_required,
+            "confidence": confidence,
+            "image_path": image_path,
+            "processed_image_path": processed_image_path,
+            "captured_at": captured_at,
         },
     )
 

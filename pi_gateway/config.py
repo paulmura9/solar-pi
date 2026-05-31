@@ -109,6 +109,16 @@ VISION_ENABLED = os.getenv("VISION_ENABLED", "true").strip().lower() not in (
     "off",
 )
 
+# --- Vision / dirt detection --------------------------------------------------
+# How often the periodic edge dirt-detection loop captures and classifies a
+# frame. 30 min default keeps the camera mostly free and Storage writes modest.
+VISION_CAPTURE_INTERVAL_S = int(os.getenv("VISION_CAPTURE_INTERVAL_S", "1800"))
+# Trained TFLite model location (same env var as inference/predict_dirt.py).
+DIRT_MODEL_PATH = os.getenv("DIRT_MODEL_PATH", "models/dirt_detection.tflite")
+# Storage object-key prefix for vision frames (reuses SUPABASE_STORAGE_BUCKET):
+# vision/<timestamp>.jpg. Analogous to STORAGE_CAPTURE_PREFIX.
+STORAGE_VISION_PREFIX = "vision"
+
 # --- Telemetry sensor validation (SI units) -----------------------------------
 # solar_current (Amperes) and solar_power (Watts) are clamp-then-validate: a
 # small-negative reading (sensor noise near zero) is clamped to the noise floor
