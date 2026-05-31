@@ -42,3 +42,11 @@ Interactive tool to capture labelled dirt-detection images on the Pi. Run it on 
 ```
 
 The Pi camera is exclusive (one process at a time). To collect a dataset while the gateway runs, start the gateway with `VISION_ENABLED=false` so it never opens the camera (everything else — WS, MQTT, command forwarding, telemetry, heartbeat — keeps working): `VISION_ENABLED=false python gateway.py`.
+
+## Dirt-detection inference (standalone)
+
+Sanity-check a trained TFLite model on a single image (no backend, MQTT, WS, or DB — just `image -> preprocess -> model -> class + confidence` to stdout). Requires `ai-edge-litert`. The preprocessing constants (ROI, channel order, class order, output activation) must match the Colab training pipeline — see the comments in the script:
+```bash
+   DIRT_MODEL_PATH=models/dirt_detection.tflite python inference/predict_dirt.py dataset/raw/<session>/<class>/<image>.jpg
+   # or: python inference/predict_dirt.py <image>.jpg --model models/dirt_detection.tflite
+```
