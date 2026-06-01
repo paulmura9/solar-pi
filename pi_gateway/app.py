@@ -237,11 +237,15 @@ class SolarGateway:
                 result["frame"],
                 result["image_path"],
                 result["captured_at"],
+                self._storage,
                 self._ws.send_or_buffer,
             )
         except Exception as exc:
             log("warning", "vision_inference_failed", image_path=result["image_path"], error=str(exc))
             return
+
+        if vision_result is None:
+            return  # quality gate blocked inference; already reported on the WS
 
         log(
             "info",

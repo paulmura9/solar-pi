@@ -23,7 +23,7 @@ import asyncio
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 import cv2
 import numpy as np
@@ -33,6 +33,8 @@ from ai_edge_litert.interpreter import Interpreter
 
 from . import config, protocol
 from .logging_utils import log
+from .storage import StorageClient
+from .surface_analysis import build_surface_overlay
 
 WsSender = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -63,6 +65,43 @@ DIRTY_WEIGHT_PERCENT = 100
 FULL_PERCENT = 100
 # Percent metrics are reported rounded to 2 decimals.
 PERCENT_DECIMALS = 2
+
+# --- Pre-inference quality gate ----------------------------------------------
+QUALITY_REASON_TOO_DARK = "too_dark"
+QUALITY_REASON_LOW_DETAIL = "low_detail"
+
+
+def crop_to_roi(frame_bgr: np.ndarray) -> np.ndarray:
+    """Crop to the fixed panel ROI (config.DIRT_ROI_*); full frame as fallback.
+
+    The model was trained on ROI-cropped images, so both inference and the surface
+    overlay crop identically through this single helper. If the ROI does not fit
+    the frame, log a warning and return the full frame (a suboptimal result beats
+    a crash).
+    """
+    height, width = frame_bgr.shape[0], frame_bgr.shape[1]
+    x, y, w, h = config.DIRT_ROI_X, config.DIRT_ROI_Y, config.DIRT_ROI_W, config.DIRT_ROI_H
+    if x < 0 or y < 0 or x + w > width or y + h > height:
+        log("warning", "vision_roi_out_of_bounds", roi=[x, y, w, h], frame=[width, height])
+        return frame_bgr
+    return frame_bgr[y : y + h, x : x + w]
+
+
+def check_frame_quality(frame_bgr: np.ndarray) -> tuple[bool, Optional[str]]:
+    """Quality gate run on the ROI crop before inference.
+
+    Rejects obstructed frames (covered lens, a hand, darkness) so the model is
+    never fed garbage: too dark (low grayscale mean) or too little detail (low
+    grayscale std, e.g. a uniform surface covering the lens). Returns
+    (True, None) when usable, else (False, reason). Thresholds are heuristics in
+    config (DIRT_QUALITY_*).
+    """
+    gray = cv2.cvtColor(crop_to_roi(frame_bgr), cv2.COLOR_BGR2GRAY)
+    if float(gray.mean()) < config.DIRT_QUALITY_MIN_MEAN:
+        return False, QUALITY_REASON_TOO_DARK
+    if float(gray.std()) < config.DIRT_QUALITY_MIN_STD:
+        return False, QUALITY_REASON_LOW_DETAIL
+    return True, None
 
 
 class VisionError(RuntimeError):
@@ -126,23 +165,9 @@ class DirtDetector:
         """Turn a full-frame BGR array into the model's (1,224,224,3) float32 input.
 
         Mirrors training exactly: crop to the fixed panel ROI, resize to 224x224,
-        BGR->RGB, /255.0 float32, add the batch axis. If the ROI does not fit the
-        frame, fall back to the full frame (a suboptimal prediction beats a crash).
+        BGR->RGB, /255.0 float32, add the batch axis.
         """
-        height, width = frame_bgr.shape[0], frame_bgr.shape[1]
-        x, y, w, h = config.DIRT_ROI_X, config.DIRT_ROI_Y, config.DIRT_ROI_W, config.DIRT_ROI_H
-        if x < 0 or y < 0 or x + w > width or y + h > height:
-            log(
-                "warning",
-                "vision_roi_out_of_bounds",
-                roi=[x, y, w, h],
-                frame=[width, height],
-            )
-            roi = frame_bgr
-        else:
-            roi = frame_bgr[y : y + h, x : x + w]
-
-        resized = cv2.resize(roi, (INPUT_WIDTH, INPUT_HEIGHT))
+        resized = cv2.resize(crop_to_roi(frame_bgr), (INPUT_WIDTH, INPUT_HEIGHT))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         normalized = rgb.astype(np.float32) / PIXEL_MAX_VALUE
         return np.expand_dims(normalized, axis=0)
@@ -191,22 +216,72 @@ class DirtDetector:
         )
 
 
+def _build_and_upload_overlay(
+    frame_bgr: np.ndarray, image_path: str, storage: StorageClient
+) -> Optional[str]:
+    """Best-effort: build the classical-CV surface overlay and upload it.
+
+    Returns the Storage object path, or None when generation/upload fails (the
+    vision_result is still sent, just without a processed image). The overlay is
+    stored under the surface/ prefix reusing the original frame's object name, so
+    each overlay correlates with its source image. Blocking; call in a worker
+    thread.
+    """
+    try:
+        overlay_jpeg = build_surface_overlay(crop_to_roi(frame_bgr))
+        object_name = image_path.split("/", 1)[1] if "/" in image_path else image_path
+        processed_path = f"{config.STORAGE_SURFACE_PREFIX}/{object_name}"
+        storage.upload_jpeg(processed_path, overlay_jpeg)
+        return processed_path
+    except Exception as exc:
+        log("warning", "surface_overlay_failed", image_path=image_path, error=str(exc))
+        return None
+
+
 async def detect_and_report(
     detector: DirtDetector,
     frame_bgr: np.ndarray,
     image_path: str,
     captured_at: str,
+    storage: StorageClient,
     ws_send: WsSender,
-) -> VisionResult:
+) -> Optional[VisionResult]:
     """Run inference off the event loop and report a vision_result over the WS.
 
     Shared by the periodic vision loop and the manual-capture handler so the
-    inference + reporting path exists once. The pure inference is
-    DirtDetector.predict; this wrapper adds the blocking-call offload and the WS
-    envelope. Raises on inference failure so the caller can log and continue.
-    processed_image_path is None until overlay generation exists.
+    inference + reporting path exists once. A pre-inference quality gate rejects
+    obstructed frames: when it fails, the model is NOT run - a neutral
+    vision_result is sent with quality_ok=false and the cause, and None is
+    returned. Otherwise it runs DirtDetector.predict, builds the best-effort
+    surface overlay (classical CV, auxiliary - see surface_analysis), and sends a
+    quality_ok=true result. Raises on inference failure so the caller can log and
+    continue; a failed overlay only leaves processed_image_path as None.
     """
+    quality_ok, quality_reason = await asyncio.to_thread(check_frame_quality, frame_bgr)
+    if not quality_ok:
+        log("warning", "vision_quality_gate_blocked", image_path=image_path, reason=quality_reason)
+        # Send the captured frame (already uploaded, useful for debug) with neutral
+        # class/percentages so the obstruction is visible without a model run.
+        await ws_send(
+            protocol.build_vision_result(
+                predicted_class=None,
+                dirt_level_percent=0.0,
+                cleanliness_percent=0.0,
+                cleaning_required=False,
+                confidence=0.0,
+                image_path=image_path,
+                processed_image_path=None,
+                captured_at=captured_at,
+                quality_ok=False,
+                quality_reason=quality_reason,
+            )
+        )
+        return None
+
     result = await asyncio.to_thread(detector.predict, frame_bgr)
+    processed_image_path = await asyncio.to_thread(
+        _build_and_upload_overlay, frame_bgr, image_path, storage
+    )
     await ws_send(
         protocol.build_vision_result(
             predicted_class=result.predicted_class,
@@ -215,8 +290,10 @@ async def detect_and_report(
             cleaning_required=result.cleaning_required,
             confidence=result.confidence,
             image_path=image_path,
-            processed_image_path=None,
+            processed_image_path=processed_image_path,
             captured_at=captured_at,
+            quality_ok=True,
+            quality_reason=None,
         )
     )
     return result

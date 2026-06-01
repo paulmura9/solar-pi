@@ -141,11 +141,13 @@ async def handle_capture_image(
         return
     try:
         vision_result = await detect_and_report(
-            vision, result["frame"], result["image_path"], result["captured_at"], ws_send
+            vision, result["frame"], result["image_path"], result["captured_at"], storage, ws_send
         )
     except Exception as exc:
         log("warning", "manual_vision_failed", command_id=command_id, error=str(exc))
         return
+    if vision_result is None:
+        return  # quality gate blocked inference; vision_result already sent
     log(
         "info",
         "manual_vision_done",

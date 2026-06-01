@@ -158,7 +158,7 @@ def build_capture_failure(command_id: str, error_message: str) -> dict[str, Any]
 
 
 def build_vision_result(
-    predicted_class: str,
+    predicted_class: Optional[str],
     dirt_level_percent: float,
     cleanliness_percent: float,
     cleaning_required: bool,
@@ -166,14 +166,19 @@ def build_vision_result(
     image_path: str,
     processed_image_path: Optional[str],
     captured_at: str,
+    quality_ok: bool,
+    quality_reason: Optional[str],
 ) -> dict[str, Any]:
     """Build a vision_result envelope (no DB write happens on the Pi).
 
     Express routes on the exact type "vision_result", uploads nothing itself, and
     INSERTs a vision_results row from this payload. Field names mirror the
-    vision_results columns; predicted_class is one of clean|slightly_dirty|dirty;
-    processed_image_path is None until overlay images are produced (single-tenant
-    project, so no user_id - see CLAUDE.md).
+    vision_results columns; predicted_class is clean|slightly_dirty|dirty (or null
+    when the pre-inference quality gate blocked the model); processed_image_path is
+    None until overlay images are produced. quality_ok is false when the frame was
+    rejected as obstructed, with quality_reason naming the cause (null otherwise);
+    in that case the class/percentages are neutral. Single-tenant project, so no
+    user_id - see CLAUDE.md.
     """
     return build_envelope(
         MSG_TYPE_VISION_RESULT,
@@ -186,6 +191,8 @@ def build_vision_result(
             "image_path": image_path,
             "processed_image_path": processed_image_path,
             "captured_at": captured_at,
+            "quality_ok": quality_ok,
+            "quality_reason": quality_reason,
         },
     )
 

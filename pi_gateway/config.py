@@ -127,6 +127,31 @@ DIRT_ROI_Y = 40
 DIRT_ROI_W = 1850
 DIRT_ROI_H = 1220
 
+# Pre-inference quality gate, computed on the ROI crop's grayscale mean/std, to
+# reject obstructed frames (covered lens, a hand over it, darkness) before they
+# reach the model. Heuristics - calibrate on real captures.
+# Below this average brightness (0..255) the frame is treated as too dark.
+DIRT_QUALITY_MIN_MEAN = 30
+# Below this contrast (grayscale std) the frame has too little detail to analyze
+# (e.g. a uniform surface covering the lens).
+DIRT_QUALITY_MIN_STD = 15
+
+# --- Surface analysis overlay (classical OpenCV, independent of the ML model) -
+# Auxiliary visual aid shipped as vision_result.processed_image_path: it estimates
+# surface deposits by image processing (local highlights brighter than the panel),
+# NOT what the CNN sees. Class/percentages still come solely from the model.
+# Gaussian blur kernel (must be odd) used to estimate the uneven background
+# lighting; a large kernel keeps real deposits while smoothing illumination.
+SURFACE_BLUR_KERNEL = 51
+# A pixel is flagged as a deposit when it is at least this much brighter (0..255)
+# than the local background estimate.
+SURFACE_DIFF_THRESHOLD = 25
+# Highlight colour (BGR) and opacity (0..1) of the deposit overlay on the crop.
+SURFACE_HIGHLIGHT_COLOR_BGR = (0, 0, 255)
+SURFACE_OVERLAY_ALPHA = 0.5
+# Storage object-key prefix for the overlay images (reuses SUPABASE_STORAGE_BUCKET).
+STORAGE_SURFACE_PREFIX = "surface"
+
 # --- Telemetry sensor validation (SI units) -----------------------------------
 # solar_current (Amperes) and solar_power (Watts) are clamp-then-validate: a
 # small-negative reading (sensor noise near zero) is clamped to the noise floor
