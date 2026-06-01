@@ -118,6 +118,14 @@ DIRT_MODEL_PATH = os.getenv("DIRT_MODEL_PATH", "models/dirt_detection.tflite")
 # Storage object-key prefix for vision frames (reuses SUPABASE_STORAGE_BUCKET):
 # vision/<timestamp>.jpg. Analogous to STORAGE_CAPTURE_PREFIX.
 STORAGE_VISION_PREFIX = "vision"
+# Fixed panel ROI cropped before resize, in full-frame (CAMERA_RESOLUTION,
+# 2304x1296) pixel coordinates: (x, y, width, height). The model was retrained on
+# images cropped to this ROI, so inference MUST apply the identical crop or the
+# predictions are invalid. Must match the crop used in the Colab training set.
+DIRT_ROI_X = 440
+DIRT_ROI_Y = 40
+DIRT_ROI_W = 1850
+DIRT_ROI_H = 1220
 
 # --- Telemetry sensor validation (SI units) -----------------------------------
 # solar_current (Amperes) and solar_power (Watts) are clamp-then-validate: a

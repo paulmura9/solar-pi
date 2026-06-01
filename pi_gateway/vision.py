@@ -7,10 +7,11 @@ images to Storage and forwards results over the WebSocket; Express persists the
 vision_results row.
 
 PREPROCESSING - CRITICAL: must be byte-for-byte equivalent to training. The model
-was trained on the FULL frame (NO crop / NO ROI): resize to 224x224, BGR->RGB,
+was retrained on images cropped to a fixed panel ROI, so inference crops the same
+ROI (config.DIRT_ROI_*) before resizing: crop to ROI, resize to 224x224, BGR->RGB,
 normalize /255.0 as float32, add the batch dimension. Any divergence invalidates
-every prediction. CameraManager.capture_full_frame() already yields a full-frame
-BGR array, which is exactly what feeds in here.
+every prediction. CameraManager.capture_full_frame() yields the full-frame BGR
+array; the ROI is applied here, in the same full-frame coordinates as training.
 
 Class order is fixed by training: index 0=clean, 1=slightly_dirty, 2=dirty. The
 exported model already applies softmax (Dense(3, activation='softmax')), so the
@@ -124,10 +125,24 @@ class DirtDetector:
     def _preprocess(frame_bgr: np.ndarray) -> np.ndarray:
         """Turn a full-frame BGR array into the model's (1,224,224,3) float32 input.
 
-        Mirrors training exactly: NO crop, resize to 224x224, BGR->RGB, /255.0
-        float32, add the batch axis.
+        Mirrors training exactly: crop to the fixed panel ROI, resize to 224x224,
+        BGR->RGB, /255.0 float32, add the batch axis. If the ROI does not fit the
+        frame, fall back to the full frame (a suboptimal prediction beats a crash).
         """
-        resized = cv2.resize(frame_bgr, (INPUT_WIDTH, INPUT_HEIGHT))
+        height, width = frame_bgr.shape[0], frame_bgr.shape[1]
+        x, y, w, h = config.DIRT_ROI_X, config.DIRT_ROI_Y, config.DIRT_ROI_W, config.DIRT_ROI_H
+        if x < 0 or y < 0 or x + w > width or y + h > height:
+            log(
+                "warning",
+                "vision_roi_out_of_bounds",
+                roi=[x, y, w, h],
+                frame=[width, height],
+            )
+            roi = frame_bgr
+        else:
+            roi = frame_bgr[y : y + h, x : x + w]
+
+        resized = cv2.resize(roi, (INPUT_WIDTH, INPUT_HEIGHT))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         normalized = rgb.astype(np.float32) / PIXEL_MAX_VALUE
         return np.expand_dims(normalized, axis=0)
