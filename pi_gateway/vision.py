@@ -68,6 +68,8 @@ PERCENT_DECIMALS = 2
 
 # --- Pre-inference quality gate ----------------------------------------------
 QUALITY_REASON_TOO_DARK = "too_dark"
+QUALITY_REASON_TOO_BRIGHT = "too_bright"
+QUALITY_REASON_NOT_PANEL = "not_panel"
 QUALITY_REASON_LOW_DETAIL = "low_detail"
 
 
@@ -90,15 +92,26 @@ def crop_to_roi(frame_bgr: np.ndarray) -> np.ndarray:
 def check_frame_quality(frame_bgr: np.ndarray) -> tuple[bool, Optional[str]]:
     """Quality gate run on the ROI crop before inference.
 
-    Rejects obstructed frames (covered lens, a hand, darkness) so the model is
-    never fed garbage: too dark (low grayscale mean) or too little detail (low
-    grayscale std, e.g. a uniform surface covering the lens). Returns
-    (True, None) when usable, else (False, reason). Thresholds are heuristics in
-    config (DIRT_QUALITY_*).
+    Rejects obstructed frames so the model is never fed garbage. Checks, in order
+    (first match wins): too dark (low grayscale mean), too bright/overexposed
+    (high grayscale mean), not the panel (red dominates blue - skin/an object over
+    the dark-blue panel), too little detail (low grayscale std, e.g. a uniform
+    surface covering the lens). Returns (True, None) when usable, else
+    (False, reason). Thresholds are heuristics in config (DIRT_QUALITY_*).
     """
-    gray = cv2.cvtColor(crop_to_roi(frame_bgr), cv2.COLOR_BGR2GRAY)
-    if float(gray.mean()) < config.DIRT_QUALITY_MIN_MEAN:
+    crop = crop_to_roi(frame_bgr)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+    mean = float(gray.mean())
+    if mean < config.DIRT_QUALITY_MIN_MEAN:
         return False, QUALITY_REASON_TOO_DARK
+    if mean > config.DIRT_QUALITY_MAX_MEAN:
+        return False, QUALITY_REASON_TOO_BRIGHT
+
+    mean_b, _mean_g, mean_r = (float(channel) for channel in cv2.mean(crop)[:3])
+    if mean_r - mean_b > config.DIRT_QUALITY_RED_DOMINANCE:
+        return False, QUALITY_REASON_NOT_PANEL
+
     if float(gray.std()) < config.DIRT_QUALITY_MIN_STD:
         return False, QUALITY_REASON_LOW_DETAIL
     return True, None

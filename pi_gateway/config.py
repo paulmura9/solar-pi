@@ -132,6 +132,13 @@ DIRT_ROI_H = 1220
 # reach the model. Heuristics - calibrate on real captures.
 # Below this average brightness (0..255) the frame is treated as too dark.
 DIRT_QUALITY_MIN_MEAN = 30
+# Above this average brightness the frame is overexposed/washed out (direct light
+# into the lens, a white object).
+DIRT_QUALITY_MAX_MEAN = 220
+# Colour gate: the panel is dark blue (mean_B >= mean_R). When red dominates the
+# blue channel by more than this (BGR means), the frame is likely skin/an object,
+# not the panel.
+DIRT_QUALITY_RED_DOMINANCE = 25
 # Below this contrast (grayscale std) the frame has too little detail to analyze
 # (e.g. a uniform surface covering the lens).
 DIRT_QUALITY_MIN_STD = 15
