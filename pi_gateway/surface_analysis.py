@@ -2,7 +2,8 @@
 
 Estimates likely surface deposits on the panel by pure image processing - local
 regions brighter than the surrounding panel once uneven background lighting is
-removed - and paints them as a semi-transparent highlight over the cropped frame.
+removed - and paints them as a semi-transparent highlight over the straightened
+panel image.
 
 IMPORTANT: this is a visual ESTIMATE for the operator, produced by classic image
 processing. It is NOT the CNN's decision and does not represent what the
@@ -22,17 +23,18 @@ class SurfaceAnalysisError(RuntimeError):
     """Raised when the surface overlay cannot be produced."""
 
 
-def build_surface_overlay(cropped_bgr: np.ndarray) -> bytes:
-    """Return JPEG bytes of the crop with estimated deposits highlighted.
+def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
+    """Return JPEG bytes of the straightened panel with deposits highlighted.
 
-    `cropped_bgr` must already be cropped to the model's ROI so the overlay
-    aligns with the analyzed region. Pure image processing (see module docstring):
-    a large Gaussian blur estimates the uneven background illumination; a
-    saturating subtract keeps only pixels brighter than that background (deposits
-    show as light specks on the darker panel); a threshold isolates them; and they
-    are blended as a semi-transparent highlight over the original crop.
+    `panel_bgr` must be the straightened panel (preprocessing.warp_panel output,
+    converted to BGR) so the overlay aligns with the region the model analyzes.
+    Pure image processing (see module docstring): a large Gaussian blur estimates
+    the uneven background illumination; a saturating subtract keeps only pixels
+    brighter than that background (deposits show as light specks on the darker
+    panel); a threshold isolates them; and they are blended as a semi-transparent
+    highlight over the original panel image.
     """
-    gray = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2GRAY)
     kernel = (config.SURFACE_BLUR_KERNEL, config.SURFACE_BLUR_KERNEL)
     background = cv2.GaussianBlur(gray, kernel, 0)
 
@@ -43,12 +45,12 @@ def build_surface_overlay(cropped_bgr: np.ndarray) -> bytes:
         diff, config.SURFACE_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY
     )
 
-    overlay = cropped_bgr.copy()
+    overlay = panel_bgr.copy()
     overlay[mask > 0] = config.SURFACE_HIGHLIGHT_COLOR_BGR
     blended = cv2.addWeighted(
         overlay,
         config.SURFACE_OVERLAY_ALPHA,
-        cropped_bgr,
+        panel_bgr,
         1.0 - config.SURFACE_OVERLAY_ALPHA,
         0.0,
     )

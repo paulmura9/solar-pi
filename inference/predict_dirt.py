@@ -9,12 +9,10 @@ trained TFLite model by hand:
 Runtime is ai-edge-litert (the maintained successor to the deprecated
 tflite-runtime). Image I/O uses OpenCV, already a repo dependency.
 
-CRITICAL: the preprocessing below MUST be byte-for-byte equivalent to the
-preprocessing used during training in Colab. Any divergence (ROI, resize
-interpolation, channel order, normalization, or class ordering) makes the
-predictions meaningless even when the script runs without error. The values
-marked "CONFIRM FROM COLAB" are the training-coupled knobs to verify before
-trusting any output.
+CRITICAL: preprocessing MUST match training exactly. This script reuses the
+production transform - pi_gateway.preprocessing.prepare_for_tflite (perspective
+warp + resize + normalize) - so it stays aligned with the v4 model and the
+gateway. Class ordering still has to match training (see CLASS_LABELS).
 
 Usage:
     python inference/predict_dirt.py path/to/image.jpg
@@ -36,6 +34,14 @@ import numpy as np
 # ai-edge-litert is the maintained replacement for the deprecated tflite-runtime.
 from ai_edge_litert.interpreter import Interpreter
 
+# Reuse the production preprocessing so this script stays aligned with the v4
+# model and the gateway. Make the sibling pi_gateway package importable when run
+# as a standalone script (python inference/predict_dirt.py) by adding the repo
+# root to sys.path before importing it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from pi_gateway.preprocessing import EXPECTED_INPUT_SHAPE, prepare_for_tflite
+
 # --- Training-coupled constants (CONFIRM FROM COLAB) --------------------------
 
 # Class labels in the EXACT order the model's output neurons were trained on.
@@ -44,39 +50,11 @@ from ai_edge_litert.interpreter import Interpreter
 # 1 == slightly_dirty, 2 == dirty (matches dataset/capture_dataset.VALID_CLASSES).
 CLASS_LABELS = ("clean", "slightly_dirty", "dirty")
 
-# Region of interest cropped from the full frame before resizing, as
-# (x, y, width, height) in pixels of the captured image. The dataset is stored
-# full-frame (see dataset/capture_dataset.py), and the ROI is applied here in
-# preprocessing exactly as in training.
-# PLACEHOLDER: replace with the real coordinates established in Colab. These must
-# be identical to the crop used to build the training set. CONFIRM FROM COLAB.
-ROI_X = 0
-ROI_Y = 0
-ROI_WIDTH = 2304   # full-frame width  from CAPTURE_SIZE; narrow once ROI is fixed
-ROI_HEIGHT = 1296  # full-frame height from CAPTURE_SIZE; narrow once ROI is fixed
-ROI = (ROI_X, ROI_Y, ROI_WIDTH, ROI_HEIGHT)
-
-# Whether to reorder channels BGR -> RGB before feeding the model. OpenCV decodes
-# images as BGR; if the Colab pipeline read images as RGB (e.g. via PIL or
-# tf.io.decode_image / Keras), the model expects RGB and this MUST be True.
-# CONFIRM FROM COLAB which channel order training used.
-CONVERT_BGR_TO_RGB = True
-
 # Whether the exported model's final layer emits raw logits (True) or already
 # applies softmax (False). Determines whether we softmax the output to obtain
 # probabilities; double-softmaxing distorts the reported confidence even though
 # the argmax is unchanged. CONFIRM FROM COLAB the model's output activation.
 MODEL_OUTPUT_IS_LOGITS = False
-
-# --- Fixed model-contract constants ------------------------------------------
-
-# Network input is 224x224 RGB/BGR, float32, scaled to [0, 1].
-INPUT_WIDTH = 224
-INPUT_HEIGHT = 224
-INPUT_CHANNELS = 3
-PIXEL_MAX_VALUE = 255.0  # 8-bit images -> /255.0 maps [0,255] to [0.0,1.0]
-BATCH_DIM = 1
-EXPECTED_INPUT_SHAPE = (BATCH_DIM, INPUT_HEIGHT, INPUT_WIDTH, INPUT_CHANNELS)
 
 # Default model location, overridable by --model or the DIRT_MODEL_PATH env var.
 MODEL_PATH_ENV_VAR = "DIRT_MODEL_PATH"
@@ -150,41 +128,6 @@ def _load_image(image_path: Path) -> np.ndarray:
     return image_bgr
 
 
-def _preprocess(image_bgr: np.ndarray) -> np.ndarray:
-    """Turn a BGR image into the model's (1, 224, 224, 3) float32 input.
-
-    MUST mirror the training preprocessing exactly (see module docstring):
-      1. crop to ROI,
-      2. resize to 224x224,
-      3. (optional) BGR -> RGB to match the training channel order,
-      4. normalize to [0, 1] as float32,
-      5. add the batch dimension.
-    """
-    height, width = image_bgr.shape[0], image_bgr.shape[1]
-    x, y, w, h = ROI
-    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
-        raise SystemExit(
-            f"ROI {ROI} does not fit within image of size {width}x{height}; "
-            "check the ROI constants against the captured frame size."
-        )
-
-    # 1. Crop to the same region the model was trained on.
-    cropped = image_bgr[y : y + h, x : x + w]
-
-    # 2. Resize to the network input size.
-    resized = cv2.resize(cropped, (INPUT_WIDTH, INPUT_HEIGHT))
-
-    # 3. Match the training channel order.
-    if CONVERT_BGR_TO_RGB:
-        resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-
-    # 4. Normalize to [0, 1] float32.
-    normalized = resized.astype(np.float32) / PIXEL_MAX_VALUE
-
-    # 5. Add the leading batch dimension (axis 0) -> (1, 224, 224, 3).
-    return np.expand_dims(normalized, axis=0)
-
-
 def _softmax(logits: np.ndarray) -> np.ndarray:
     """Numerically stable softmax over a 1-D vector of scores."""
     shifted = logits - np.max(logits)
@@ -228,7 +171,7 @@ def main() -> None:
     args = _parse_args()
     interpreter = _load_interpreter(Path(args.model))
     image_bgr = _load_image(Path(args.image))
-    model_input = _preprocess(image_bgr)
+    model_input = prepare_for_tflite(image_bgr)
     raw_output, elapsed_ms = _infer(interpreter, model_input)
     _report(raw_output, elapsed_ms)
 

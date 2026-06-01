@@ -6,12 +6,12 @@ frame into a structured VisionResult. No disk I/O, no DB writes: the Pi uploads
 images to Storage and forwards results over the WebSocket; Express persists the
 vision_results row.
 
-PREPROCESSING - CRITICAL: must be byte-for-byte equivalent to training. The model
-was retrained on images cropped to a fixed panel ROI, so inference crops the same
-ROI (config.DIRT_ROI_*) before resizing: crop to ROI, resize to 224x224, BGR->RGB,
-normalize /255.0 as float32, add the batch dimension. Any divergence invalidates
-every prediction. CameraManager.capture_full_frame() yields the full-frame BGR
-array; the ROI is applied here, in the same full-frame coordinates as training.
+PREPROCESSING - CRITICAL: must be byte-for-byte equivalent to training. The v4
+model was trained on images straightened by a fixed perspective warp, so inference
+applies the identical warp before resizing. That transform lives in
+pi_gateway/preprocessing.py (warp_panel / prepare_for_tflite) and is shared with
+the surface-analysis pipeline so both work on the same straightened panel. Any
+divergence invalidates every prediction.
 
 Class order is fixed by training: index 0=clean, 1=slightly_dirty, 2=dirty. The
 exported model already applies softmax (Dense(3, activation='softmax')), so the
@@ -33,6 +33,12 @@ from ai_edge_litert.interpreter import Interpreter
 
 from . import config, protocol
 from .logging_utils import log
+from .preprocessing import (
+    EXPECTED_INPUT_SHAPE,
+    INPUT_CHANNELS,
+    prepare_for_tflite,
+    warp_panel,
+)
 from .storage import StorageClient
 from .surface_analysis import build_surface_overlay
 
@@ -48,12 +54,8 @@ CLASS_LABELS = (CLASS_CLEAN, CLASS_SLIGHTLY_DIRTY, CLASS_DIRTY)
 INDEX_SLIGHTLY_DIRTY = CLASS_LABELS.index(CLASS_SLIGHTLY_DIRTY)
 INDEX_DIRTY = CLASS_LABELS.index(CLASS_DIRTY)
 
-# --- Model input contract (must match the training preprocessing) ------------
-INPUT_WIDTH = 224
-INPUT_HEIGHT = 224
-INPUT_CHANNELS = 3
-PIXEL_MAX_VALUE = 255.0  # 8-bit images -> /255.0 maps [0,255] to [0.0,1.0]
-EXPECTED_INPUT_SHAPE = (1, INPUT_HEIGHT, INPUT_WIDTH, INPUT_CHANNELS)
+# Model input contract (EXPECTED_INPUT_SHAPE, INPUT_CHANNELS) lives in
+# preprocessing.py alongside the transform that produces it.
 
 # --- Derived 0..100 metrics ---------------------------------------------------
 # Collapse the 3-class probability distribution into a single dirt score: a
@@ -74,12 +76,12 @@ QUALITY_REASON_LOW_DETAIL = "low_detail"
 
 
 def crop_to_roi(frame_bgr: np.ndarray) -> np.ndarray:
-    """Crop to the fixed panel ROI (config.DIRT_ROI_*); full frame as fallback.
+    """Crop to the fixed obstruction-check ROI (config.DIRT_ROI_*); full-frame fallback.
 
-    The model was trained on ROI-cropped images, so both inference and the surface
-    overlay crop identically through this single helper. If the ROI does not fit
-    the frame, log a warning and return the full frame (a suboptimal result beats
-    a crash).
+    Used only by the pre-inference quality gate to sample the panel region for
+    obstruction. The model and surface-analysis preprocessing use the perspective
+    warp (preprocessing.py), not this crop. If the ROI does not fit the frame, log
+    a warning and return the full frame (a suboptimal check beats a crash).
     """
     height, width = frame_bgr.shape[0], frame_bgr.shape[1]
     x, y, w, h = config.DIRT_ROI_X, config.DIRT_ROI_Y, config.DIRT_ROI_W, config.DIRT_ROI_H
@@ -173,30 +175,20 @@ class DirtDetector:
     def from_config(cls) -> "DirtDetector":
         return cls(config.DIRT_MODEL_PATH)
 
-    @staticmethod
-    def _preprocess(frame_bgr: np.ndarray) -> np.ndarray:
-        """Turn a full-frame BGR array into the model's (1,224,224,3) float32 input.
-
-        Mirrors training exactly: crop to the fixed panel ROI, resize to 224x224,
-        BGR->RGB, /255.0 float32, add the batch axis.
-        """
-        resized = cv2.resize(crop_to_roi(frame_bgr), (INPUT_WIDTH, INPUT_HEIGHT))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        normalized = rgb.astype(np.float32) / PIXEL_MAX_VALUE
-        return np.expand_dims(normalized, axis=0)
-
     def predict(self, frame_bgr: np.ndarray) -> VisionResult:
         """Run inference on one in-memory BGR frame. Blocking; call off the loop.
 
-        Pure with respect to the model (no I/O). Raises VisionError on an invalid
-        frame or an unexpected model output so the caller can log and continue.
+        Pure with respect to the model (no I/O). Preprocessing (perspective warp +
+        resize + normalize) is the shared prepare_for_tflite. Raises VisionError on
+        an invalid frame or an unexpected model output so the caller can log and
+        continue.
         """
         if frame_bgr is None or getattr(frame_bgr, "size", 0) == 0:
             raise VisionError("empty frame")
         if frame_bgr.ndim != 3 or frame_bgr.shape[2] != INPUT_CHANNELS:
             raise VisionError(f"expected an HxWx{INPUT_CHANNELS} BGR frame, got shape {frame_bgr.shape}")
 
-        model_input = self._preprocess(frame_bgr)
+        model_input = prepare_for_tflite(frame_bgr)
         with self._lock:
             self._interpreter.set_tensor(self._input_index, model_input)
             self._interpreter.invoke()
@@ -241,7 +233,10 @@ def _build_and_upload_overlay(
     thread.
     """
     try:
-        overlay_jpeg = build_surface_overlay(crop_to_roi(frame_bgr))
+        # Same straightened panel the model sees. warp_panel returns RGB; convert
+        # back to BGR for the BGR-oriented overlay (correct red highlight + JPEG).
+        warped_bgr = cv2.cvtColor(warp_panel(frame_bgr), cv2.COLOR_RGB2BGR)
+        overlay_jpeg = build_surface_overlay(warped_bgr)
         object_name = image_path.split("/", 1)[1] if "/" in image_path else image_path
         processed_path = f"{config.STORAGE_SURFACE_PREFIX}/{object_name}"
         storage.upload_jpeg(processed_path, overlay_jpeg)
