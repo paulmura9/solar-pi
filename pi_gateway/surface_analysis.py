@@ -18,9 +18,31 @@ import numpy as np
 
 from . import config
 
+# Drop dirt-mask contours whose bounding-box aspect ratio (width/height) exceeds
+# this: long thin shapes are the panel's light horizontal bus bars, not dirt.
+# Lower values filter lines more aggressively but risk cutting elongated dirt.
+ASPECT_RATIO_MAX = 8
+
 
 class SurfaceAnalysisError(RuntimeError):
     """Raised when the surface overlay cannot be produced."""
+
+
+def _drop_bus_bar_contours(dirt_mask: np.ndarray) -> np.ndarray:
+    """Rebuild the dirt mask without long thin (bus-bar) components.
+
+    Filters the mask's external contours by bounding-box aspect ratio: a contour
+    wider than ASPECT_RATIO_MAX:1 is the panel's horizontal bus bar, not dirt, so
+    it is dropped; compact blobs are kept and refilled. Shape-based, so dirt lying
+    on a bar (a compact blob) survives while the bar itself is removed.
+    """
+    contours, _ = cv2.findContours(dirt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    kept = np.zeros_like(dirt_mask)
+    for contour in contours:
+        _x, _y, width, height = cv2.boundingRect(contour)
+        if width / height <= ASPECT_RATIO_MAX:
+            cv2.drawContours(kept, [contour], -1, 255, thickness=cv2.FILLED)
+    return kept
 
 
 def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
@@ -31,8 +53,9 @@ def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
     Pure image processing (see module docstring): a large Gaussian blur estimates
     the uneven background illumination; a saturating subtract keeps only pixels
     brighter than that background (deposits show as light specks on the darker
-    panel); a threshold isolates them; and they are blended as a semi-transparent
-    highlight over the original panel image.
+    panel); a threshold isolates them; a shape filter drops the long thin bus
+    bars (see _drop_bus_bar_contours); and the result is blended as a
+    semi-transparent highlight over the original panel image.
     """
     gray = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2GRAY)
     kernel = (config.SURFACE_BLUR_KERNEL, config.SURFACE_BLUR_KERNEL)
@@ -44,6 +67,10 @@ def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
     _, mask = cv2.threshold(
         diff, config.SURFACE_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY
     )
+
+    # Shape filter (before the overlay, and before any metric derived from the
+    # mask) so the panel's light bus bars are not highlighted/counted as dirt.
+    mask = _drop_bus_bar_contours(mask)
 
     overlay = panel_bgr.copy()
     overlay[mask > 0] = config.SURFACE_HIGHLIGHT_COLOR_BGR
