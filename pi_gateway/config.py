@@ -156,6 +156,11 @@ SURFACE_DIFF_THRESHOLD = 25
 # Highlight colour (BGR) and opacity (0..1) of the deposit overlay on the crop.
 SURFACE_HIGHLIGHT_COLOR_BGR = (0, 0, 255)
 SURFACE_OVERLAY_ALPHA = 0.5
+# Drop dirt-mask components whose longer-to-shorter bounding-box side ratio exceeds
+# this: long thin shapes are the panel's straight horizontal/vertical bus bars, not
+# dirt. Checked both orientations. Lower filters lines harder but risks cutting
+# elongated dirt; compact blobs stay well under it.
+SURFACE_BUSBAR_ASPECT_RATIO_MAX = 8
 # Storage object-key prefix for the overlay images (reuses SUPABASE_STORAGE_BUCKET).
 STORAGE_SURFACE_PREFIX = "surface"
 

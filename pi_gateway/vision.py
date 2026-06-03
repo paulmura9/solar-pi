@@ -68,6 +68,16 @@ FULL_PERCENT = 100
 # Percent metrics are reported rounded to 2 decimals.
 PERCENT_DECIMALS = 2
 
+# --- Class thresholds on the 0..100 dirt scale --------------------------------
+# Reported class, cleaning flag and dirt_level_percent must stay mutually
+# consistent, so the class is derived from the continuous dirt score rather than
+# the raw argmax (which can disagree with the weighted score). Bands:
+# clean <= 33 < slightly_dirty <= 66 < dirty.
+DIRT_CLEAN_MAX_PERCENT = 33
+DIRT_SLIGHTLY_MAX_PERCENT = 66
+# Cleaning is required once the panel reaches the dirty band.
+CLEANING_REQUIRED_PERCENT = 66
+
 # --- Pre-inference quality gate ----------------------------------------------
 QUALITY_REASON_TOO_DARK = "too_dark"
 QUALITY_REASON_TOO_BRIGHT = "too_bright"
@@ -201,8 +211,10 @@ class DirtDetector:
 
         # The model already applies softmax, so the output is used directly.
         probabilities = [float(value) for value in raw_output]
+        # argmax is the model's most-likely class; kept only to report confidence
+        # (its softmax probability). The reported class is NOT taken from here - it
+        # is derived from dirt_level_percent below so it cannot contradict the score.
         predicted_index = int(np.argmax(raw_output))
-        predicted_class = CLASS_LABELS[predicted_index]
 
         dirt_level_percent = round(
             probabilities[INDEX_SLIGHTLY_DIRTY] * SLIGHTLY_DIRTY_WEIGHT_PERCENT
@@ -211,13 +223,22 @@ class DirtDetector:
         )
         cleanliness_percent = round(FULL_PERCENT - dirt_level_percent, PERCENT_DECIMALS)
 
+        # Class and cleaning flag both derive from the continuous dirt score, so all
+        # three reported outputs are consistent functions of dirt_level_percent.
+        if dirt_level_percent <= DIRT_CLEAN_MAX_PERCENT:
+            predicted_class = CLASS_CLEAN
+        elif dirt_level_percent <= DIRT_SLIGHTLY_MAX_PERCENT:
+            predicted_class = CLASS_SLIGHTLY_DIRTY
+        else:
+            predicted_class = CLASS_DIRTY
+
         return VisionResult(
             predicted_class=predicted_class,
             probabilities=dict(zip(CLASS_LABELS, probabilities)),
             confidence=probabilities[predicted_index],
             dirt_level_percent=dirt_level_percent,
             cleanliness_percent=cleanliness_percent,
-            cleaning_required=predicted_class == CLASS_DIRTY,
+            cleaning_required=dirt_level_percent >= CLEANING_REQUIRED_PERCENT,
         )
 
 

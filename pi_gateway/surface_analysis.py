@@ -18,11 +18,6 @@ import numpy as np
 
 from . import config
 
-# Drop dirt-mask contours whose bounding-box aspect ratio (width/height) exceeds
-# this: long thin shapes are the panel's light horizontal bus bars, not dirt.
-# Lower values filter lines more aggressively but risk cutting elongated dirt.
-ASPECT_RATIO_MAX = 8
-
 
 class SurfaceAnalysisError(RuntimeError):
     """Raised when the surface overlay cannot be produced."""
@@ -31,16 +26,19 @@ class SurfaceAnalysisError(RuntimeError):
 def _drop_bus_bar_contours(dirt_mask: np.ndarray) -> np.ndarray:
     """Rebuild the dirt mask without long thin (bus-bar) components.
 
-    Filters the mask's external contours by bounding-box aspect ratio: a contour
-    wider than ASPECT_RATIO_MAX:1 is the panel's horizontal bus bar, not dirt, so
-    it is dropped; compact blobs are kept and refilled. Shape-based, so dirt lying
-    on a bar (a compact blob) survives while the bar itself is removed.
+    Filters the mask's external contours by bounding-box elongation: the longer
+    box side over the shorter. A ratio above config.SURFACE_BUSBAR_ASPECT_RATIO_MAX
+    is one of the panel's straight bus bars - horizontal OR vertical, since both
+    orientations are tested - so it is dropped; compact blobs are kept and refilled.
+    Shape-based, so dirt lying on a bar (a compact blob) survives while the bar
+    itself is removed.
     """
     contours, _ = cv2.findContours(dirt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     kept = np.zeros_like(dirt_mask)
     for contour in contours:
         _x, _y, width, height = cv2.boundingRect(contour)
-        if width / height <= ASPECT_RATIO_MAX:
+        elongation = max(width, height) / min(width, height)
+        if elongation <= config.SURFACE_BUSBAR_ASPECT_RATIO_MAX:
             cv2.drawContours(kept, [contour], -1, 255, thickness=cv2.FILLED)
     return kept
 
