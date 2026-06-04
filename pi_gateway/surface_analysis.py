@@ -23,24 +23,26 @@ class SurfaceAnalysisError(RuntimeError):
     """Raised when the surface overlay cannot be produced."""
 
 
-def _drop_bus_bar_contours(dirt_mask: np.ndarray) -> np.ndarray:
-    """Rebuild the dirt mask without long thin (bus-bar) components.
+def _remove_bus_bars(dirt_mask: np.ndarray) -> np.ndarray:
+    """Remove the panel's straight bus bars and cell edges from the dirt mask.
 
-    Filters the mask's external contours by bounding-box elongation: the longer
-    box side over the shorter. A ratio above config.SURFACE_BUSBAR_ASPECT_RATIO_MAX
-    is one of the panel's straight bus bars - horizontal OR vertical, since both
-    orientations are tested - so it is dropped; compact blobs are kept and refilled.
-    Shape-based, so dirt lying on a bar (a compact blob) survives while the bar
-    itself is removed.
+    In the straightened panel the bus bars run strictly horizontal and the cell
+    edges strictly vertical, while dirt is isotropic. A morphological opening with a
+    long thin horizontal LINE kernel keeps only horizontal runs at least
+    config.SURFACE_HLINE_LENGTH px long (the bus bars); the same with a vertical
+    kernel of config.SURFACE_VLINE_LENGTH keeps the vertical cell edges. Their union
+    is subtracted from the mask. Compact deposits match neither line kernel, so they
+    survive even when smaller than the bus bars are thick - the case a uniform
+    opening cannot handle, and unlike a bounding-box test it removes bars even where
+    they interconnect into one panel-spanning lattice. Dirt lying directly on a bar
+    is removed with it (an accepted edge case; off-bar deposits are unaffected).
     """
-    contours, _ = cv2.findContours(dirt_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    kept = np.zeros_like(dirt_mask)
-    for contour in contours:
-        _x, _y, width, height = cv2.boundingRect(contour)
-        elongation = max(width, height) / min(width, height)
-        if elongation <= config.SURFACE_BUSBAR_ASPECT_RATIO_MAX:
-            cv2.drawContours(kept, [contour], -1, 255, thickness=cv2.FILLED)
-    return kept
+    horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (config.SURFACE_HLINE_LENGTH, 1))
+    vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1, config.SURFACE_VLINE_LENGTH))
+    h_lines = cv2.morphologyEx(dirt_mask, cv2.MORPH_OPEN, horizontal)
+    v_lines = cv2.morphologyEx(dirt_mask, cv2.MORPH_OPEN, vertical)
+    lines = cv2.bitwise_or(h_lines, v_lines)
+    return cv2.subtract(dirt_mask, lines)
 
 
 def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
@@ -51,9 +53,9 @@ def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
     Pure image processing (see module docstring): a large Gaussian blur estimates
     the uneven background illumination; a saturating subtract keeps only pixels
     brighter than that background (deposits show as light specks on the darker
-    panel); a threshold isolates them; a shape filter drops the long thin bus
-    bars (see _drop_bus_bar_contours); and the result is blended as a
-    semi-transparent highlight over the original panel image.
+    panel); a threshold isolates them; a direction-aware morphological filter
+    removes the straight bus bars and cell edges (see _remove_bus_bars); and the
+    result is blended as a semi-transparent highlight over the original panel image.
     """
     gray = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2GRAY)
     kernel = (config.SURFACE_BLUR_KERNEL, config.SURFACE_BLUR_KERNEL)
@@ -66,9 +68,9 @@ def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
         diff, config.SURFACE_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY
     )
 
-    # Shape filter (before the overlay, and before any metric derived from the
+    # Line filter (before the overlay, and before any metric derived from the
     # mask) so the panel's light bus bars are not highlighted/counted as dirt.
-    mask = _drop_bus_bar_contours(mask)
+    mask = _remove_bus_bars(mask)
 
     overlay = panel_bgr.copy()
     overlay[mask > 0] = config.SURFACE_HIGHLIGHT_COLOR_BGR

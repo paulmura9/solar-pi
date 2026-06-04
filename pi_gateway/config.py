@@ -156,11 +156,16 @@ SURFACE_DIFF_THRESHOLD = 25
 # Highlight colour (BGR) and opacity (0..1) of the deposit overlay on the crop.
 SURFACE_HIGHLIGHT_COLOR_BGR = (0, 0, 255)
 SURFACE_OVERLAY_ALPHA = 0.5
-# Drop dirt-mask components whose longer-to-shorter bounding-box side ratio exceeds
-# this: long thin shapes are the panel's straight horizontal/vertical bus bars, not
-# dirt. Checked both orientations. Lower filters lines harder but risks cutting
-# elongated dirt; compact blobs stay well under it.
-SURFACE_BUSBAR_ASPECT_RATIO_MAX = 8
+# Bus-bar removal by direction-aware morphology. In the straightened panel the bus
+# bars run strictly horizontal and the cell edges strictly vertical, while dirt is
+# isotropic. A morphological opening with a long thin LINE kernel keeps only the runs
+# at least this many pixels long in that direction (the bus bars / cell edges), which
+# are then subtracted from the dirt mask. Compact deposits match neither line kernel
+# and survive regardless of size - unlike a uniform opening, which erases the small
+# specks before the thicker bus bars. Bus bars span the whole panel, so these can be
+# raised to spare genuinely elongated dirt; lower values catch shorter line fragments.
+SURFACE_HLINE_LENGTH = 25  # horizontal-line kernel length (px), for the bus bars
+SURFACE_VLINE_LENGTH = 25  # vertical-line kernel length (px), for the cell edges
 # Storage object-key prefix for the overlay images (reuses SUPABASE_STORAGE_BUCKET).
 STORAGE_SURFACE_PREFIX = "surface"
 
