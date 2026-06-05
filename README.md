@@ -2,9 +2,12 @@
 
 Python edge gateway that runs on a Raspberry Pi 3B and bridges the local device
 network and the cloud backend. It is the Raspberry Pi component of LightTrack, a
-bachelor's thesis project for monitoring a solar panel. The gateway relays
-telemetry and commands between an ESP32 on the local network and an Express
-backend in the cloud, and runs the on-device camera pipeline for dirt detection.
+bachelor's thesis project for monitoring a solar panel. LightTrack is a
+four-layer system — ESP32 firmware, this Raspberry Pi gateway, an Express
+(Railway) and Supabase cloud backend, and a Next.js dashboard — and this
+repository is the edge-gateway layer. The gateway relays telemetry and commands
+between an ESP32 on the local network and the Express backend in the cloud, and
+runs the on-device camera pipeline for dirt detection.
 
 ## Architecture
 
