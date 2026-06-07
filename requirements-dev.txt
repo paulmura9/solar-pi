@@ -1,0 +1,4 @@
+# Test-only dependencies. NOT installed on the Pi (the gateway never imports them
+# at runtime). Install locally with:  pip install -r requirements-dev.txt
+pytest==8.3.4
+pytest-asyncio==0.25.2
