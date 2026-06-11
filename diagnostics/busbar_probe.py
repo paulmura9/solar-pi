@@ -92,7 +92,8 @@ def _report(mask: np.ndarray) -> None:
     print(
         "\nPick the smallest kernel where the bus bars disappear in the saved PNGs\n"
         "but the deposits remain. Bus bars vanish once k exceeds their thickness\n"
-        "(see the percentiles); set SURFACE_BUSBAR_OPEN_KERNEL to that value."
+        "(see the percentiles); size SURFACE_HLINE_LENGTH / SURFACE_VLINE_LENGTH\n"
+        "in pi_gateway/config.py accordingly."
     )
 
 

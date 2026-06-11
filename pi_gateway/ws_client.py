@@ -17,7 +17,7 @@ import random
 from typing import Any, Awaitable, Callable, Optional
 
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from . import config, protocol
 from .logging_utils import log
@@ -63,8 +63,8 @@ class WebSocketClient:
             try:
                 await self._connect_and_serve()
                 backoff = config.WS_RECONNECT_MIN_DELAY_S
-            except InvalidStatusCode as err:
-                log("error", "ws_handshake_rejected", status=err.status_code)
+            except InvalidStatus as err:
+                log("error", "ws_handshake_rejected", status=err.response.status_code)
             except (OSError, asyncio.TimeoutError, ConnectionClosed) as err:
                 log("warning", "ws_connection_lost", error=str(err))
             except asyncio.CancelledError:
