@@ -12,28 +12,21 @@ from typing import Any
 
 from . import config
 
-# Servo angle bounds (degrees); the ESP32 mechanism spans this range.
 ANGLE_MIN_DEG = 0
 ANGLE_MAX_DEG = 180
 REQUIRED_ANGLE_FIELDS = ("horizontal_angle", "vertical_angle")
 
-# Optional sensor fields with known-sane (low, high) ranges, checked when present.
 TELEMETRY_OPTIONAL_RANGES = {
     "battery_voltage": (0, 15),
     "battery_percent": (0, 100),
     "solar_voltage": (0, 30),
 }
 
-# Clamp-then-validate fields (SI units). A small-negative reading within the
-# negative deadband is clamped to the noise floor rather than rejected, so sensor
-# noise near zero never drops the whole packet.
 TELEMETRY_CLAMP_RANGES = {
     "solar_current": (config.SOLAR_CURRENT_MIN_A, config.SOLAR_CURRENT_MAX_A),
     "solar_power": (config.SOLAR_POWER_MIN_W, config.SOLAR_POWER_MAX_W),
 }
 
-# Optional non-negative accumulator fields (no fixed upper bound), checked when
-# present. Maps field name -> minimum allowed value.
 TELEMETRY_NONNEGATIVE_MINIMUMS = {
     "solar_energy_today_wh": config.SOLAR_ENERGY_TODAY_MIN_WH,
 }
@@ -62,9 +55,6 @@ def validate_telemetry(data: dict[str, Any]) -> tuple[bool, str]:
         if not isinstance(value, (int, float)) or not low <= value <= high:
             return False, f"{field_name} out of range: {value}"
 
-    # Clamp-then-validate: reject only readings outside [MIN, MAX]; clamp a
-    # small-negative deadband reading up to the noise floor in-place so the
-    # forwarded packet carries the corrected value and is never dropped for noise.
     for field_name, (low, high) in TELEMETRY_CLAMP_RANGES.items():
         value = data.get(field_name)
         if value is None:

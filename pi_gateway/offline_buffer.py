@@ -64,7 +64,6 @@ class OfflineBuffer:
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
-                # Duplicate id: the message is already buffered; nothing to do.
                 pass
 
     async def get_pending(self, limit: int) -> list[tuple[str, str]]:

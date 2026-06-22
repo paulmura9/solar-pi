@@ -61,15 +61,11 @@ def build_surface_overlay(panel_bgr: np.ndarray) -> bytes:
     kernel = (config.SURFACE_BLUR_KERNEL, config.SURFACE_BLUR_KERNEL)
     background = cv2.GaussianBlur(gray, kernel, 0)
 
-    # Saturating subtract: pixels darker than the local background clamp to 0, so
-    # only lighter-than-panel regions (candidate deposits) survive.
     diff = cv2.subtract(gray, background)
     _, mask = cv2.threshold(
         diff, config.SURFACE_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY
     )
 
-    # Line filter (before the overlay, and before any metric derived from the
-    # mask) so the panel's light bus bars are not highlighted/counted as dirt.
     mask = _remove_bus_bars(mask)
 
     overlay = panel_bgr.copy()

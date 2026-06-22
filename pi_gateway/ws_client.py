@@ -126,8 +126,6 @@ class WebSocketClient:
             flush_task: Optional[asyncio.Task[None]] = None
             try:
                 await self._send_sync_request()
-                # Flush the buffer in the background so command reception is not
-                # blocked by a large drain after a long outage.
                 flush_task = asyncio.create_task(self._flush_buffer())
                 await self._receive_loop()
             finally:

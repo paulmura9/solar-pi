@@ -38,9 +38,6 @@ class MQTTBridge:
         self._on_event = on_event
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-        # Backpressure: count of MQTT messages queued for asyncio processing.
-        # Guarded by a lock because `_on_message` runs on the paho thread while
-        # the decrement happens on the asyncio thread via `_wrap_handler`.
         self._inflight_count = 0
         self._inflight_lock = threading.Lock()
 
@@ -98,8 +95,6 @@ class MQTTBridge:
         if self._loop is None or not self._loop.is_running():
             return
 
-        # Backpressure guard: drop messages if too many are already queued for
-        # asyncio processing (prevents unbounded growth when the WS is down).
         with self._inflight_lock:
             if self._inflight_count >= config.MQTT_INFLIGHT_LIMIT:
                 log(

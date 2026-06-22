@@ -27,7 +27,6 @@ from .vision import DirtDetector, detect_and_report
 
 WsSender = Callable[[dict[str, Any]], Awaitable[None]]
 
-# Compact, filesystem/URL-safe UTC stamp for the storage object key.
 _OBJECT_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
 
@@ -134,9 +133,6 @@ async def handle_capture_image(
     )
     await send_capture_success(command_id, result, ws_send)
 
-    # Best-effort dirt detection on the same frame: the manual capture has
-    # already succeeded above, so an inference failure must not change its
-    # outcome - it only means no extra vision_result is emitted.
     if vision is None:
         return
     try:
@@ -147,7 +143,7 @@ async def handle_capture_image(
         log("warning", "manual_vision_failed", command_id=command_id, error=str(exc))
         return
     if vision_result is None:
-        return  # quality gate blocked inference; vision_result already sent
+        return
     log(
         "info",
         "manual_vision_done",

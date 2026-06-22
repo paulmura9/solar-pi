@@ -51,7 +51,6 @@ class CommandDispatcher:
         log("info", "command_received", id=command_id, type=command_type)
 
         if command_type == protocol.CMD_CAPTURE_IMAGE:
-            # Handled locally on the Pi; NOT forwarded to the ESP32 over MQTT.
             await handle_capture_image(
                 command_id, self._camera, self._storage, self._ws_send, self._vision
             )
@@ -73,9 +72,6 @@ class CommandDispatcher:
     async def _forward_to_esp32(
         self, command_id: str, command_type: str, args: dict[str, Any]
     ) -> None:
-        # MQTT command/ACK payload shape is the established contract with the
-        # ESP32 firmware (preserved from the original gateway). The ESP32 replies
-        # on solar/commands/ack, which the gateway relays to Express.
         mqtt_payload = {
             "commandId": command_id,
             "command_type": command_type,

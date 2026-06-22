@@ -28,7 +28,6 @@ from typing import Any, Awaitable, Callable, Optional
 import cv2
 import numpy as np
 
-# ai-edge-litert is the maintained replacement for the deprecated tflite-runtime.
 from ai_edge_litert.interpreter import Interpreter
 
 from . import config, protocol
@@ -44,41 +43,22 @@ from .surface_analysis import build_surface_overlay
 
 WsSender = Callable[[dict[str, Any]], Awaitable[None]]
 
-# --- Class vocabulary (order fixed by training; do not reorder) ---------------
 CLASS_CLEAN = "clean"
 CLASS_SLIGHTLY_DIRTY = "slightly_dirty"
 CLASS_DIRTY = "dirty"
 CLASS_LABELS = (CLASS_CLEAN, CLASS_SLIGHTLY_DIRTY, CLASS_DIRTY)
-# Indices derived from the label order so the weighting below cannot drift out of
-# sync with CLASS_LABELS if the tuple is ever edited.
 INDEX_SLIGHTLY_DIRTY = CLASS_LABELS.index(CLASS_SLIGHTLY_DIRTY)
 INDEX_DIRTY = CLASS_LABELS.index(CLASS_DIRTY)
 
-# Model input contract (EXPECTED_INPUT_SHAPE, INPUT_CHANNELS) lives in
-# preprocessing.py alongside the transform that produces it.
-
-# --- Derived 0..100 metrics ---------------------------------------------------
-# Collapse the 3-class probability distribution into a single dirt score: a
-# slightly_dirty panel counts as half-dirty, a dirty panel as fully dirty, clean
-# contributes 0. So dirt_level = P(slightly_dirty)*50 + P(dirty)*100.
 SLIGHTLY_DIRTY_WEIGHT_PERCENT = 50
 DIRTY_WEIGHT_PERCENT = 100
-# Cleanliness is the complement of the dirt level on the same 0..100 scale.
 FULL_PERCENT = 100
-# Percent metrics are reported rounded to 2 decimals.
 PERCENT_DECIMALS = 2
 
-# --- Class thresholds on the 0..100 dirt scale --------------------------------
-# Reported class, cleaning flag and dirt_level_percent must stay mutually
-# consistent, so the class is derived from the continuous dirt score rather than
-# the raw argmax (which can disagree with the weighted score). Bands:
-# clean <= 33 < slightly_dirty <= 66 < dirty.
 DIRT_CLEAN_MAX_PERCENT = 33
 DIRT_SLIGHTLY_MAX_PERCENT = 66
-# Cleaning is required once the panel reaches the dirty band.
 CLEANING_REQUIRED_PERCENT = 66
 
-# --- Pre-inference quality gate ----------------------------------------------
 QUALITY_REASON_TOO_DARK = "too_dark"
 QUALITY_REASON_TOO_BRIGHT = "too_bright"
 QUALITY_REASON_NOT_PANEL = "not_panel"
@@ -138,8 +118,8 @@ class VisionResult:
     """Structured outcome of one dirt-detection inference."""
 
     predicted_class: str
-    probabilities: dict[str, float]  # label -> probability (sums to ~1.0)
-    confidence: float  # max softmax probability, 0..1
+    probabilities: dict[str, float]
+    confidence: float
     dirt_level_percent: float
     cleanliness_percent: float
     cleaning_required: bool
@@ -161,7 +141,7 @@ class DirtDetector:
         try:
             interpreter = Interpreter(model_path=str(path))
             interpreter.allocate_tensors()
-        except Exception as exc:  # corrupt / incompatible model file
+        except Exception as exc:
             raise VisionError(f"failed to load dirt model {path}: {exc}") from exc
 
         input_detail = interpreter.get_input_details()[0]
@@ -209,11 +189,7 @@ class DirtDetector:
                 f"model output {raw_output.shape} != one value per class {CLASS_LABELS}"
             )
 
-        # The model already applies softmax, so the output is used directly.
         probabilities = [float(value) for value in raw_output]
-        # argmax is the model's most-likely class; kept only to report confidence
-        # (its softmax probability). The reported class is NOT taken from here - it
-        # is derived from dirt_level_percent below so it cannot contradict the score.
         predicted_index = int(np.argmax(raw_output))
 
         dirt_level_percent = round(
@@ -223,8 +199,6 @@ class DirtDetector:
         )
         cleanliness_percent = round(FULL_PERCENT - dirt_level_percent, PERCENT_DECIMALS)
 
-        # Class and cleaning flag both derive from the continuous dirt score, so all
-        # three reported outputs are consistent functions of dirt_level_percent.
         if dirt_level_percent <= DIRT_CLEAN_MAX_PERCENT:
             predicted_class = CLASS_CLEAN
         elif dirt_level_percent <= DIRT_SLIGHTLY_MAX_PERCENT:
@@ -254,8 +228,6 @@ def _build_and_upload_overlay(
     thread.
     """
     try:
-        # Same straightened panel the model sees. warp_panel returns RGB; convert
-        # back to BGR for the BGR-oriented overlay (correct red highlight + JPEG).
         warped_bgr = cv2.cvtColor(warp_panel(frame_bgr), cv2.COLOR_RGB2BGR)
         overlay_jpeg = build_surface_overlay(warped_bgr)
         object_name = image_path.split("/", 1)[1] if "/" in image_path else image_path
@@ -289,8 +261,6 @@ async def detect_and_report(
     quality_ok, quality_reason = await asyncio.to_thread(check_frame_quality, frame_bgr)
     if not quality_ok:
         log("warning", "vision_quality_gate_blocked", image_path=image_path, reason=quality_reason)
-        # Send the captured frame (already uploaded, useful for debug) with neutral
-        # class/percentages so the obstruction is visible without a model run.
         await ws_send(
             protocol.build_vision_result(
                 predicted_class=None,

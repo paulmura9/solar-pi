@@ -19,10 +19,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-# --- Isolate from hardware/cloud BEFORE importing the gateway package ----------
-# pi_gateway.dispatcher transitively imports the camera, vision (TFLite), Supabase
-# and MQTT modules, which pull in libraries that are absent off the Pi. Stub those
-# third-party modules so the import chain succeeds and nothing real is initialized.
 for _name in (
     "cv2",
     "numpy",
@@ -37,7 +33,6 @@ for _name in (
 ):
     sys.modules.setdefault(_name, MagicMock(name=_name))
 
-# config.py fails fast at import time if these are unset; supply harmless values.
 os.environ.setdefault("EXPRESS_WS_URL", "ws://test.invalid/ws/device")
 os.environ.setdefault("DEVICE_API_KEY", "test-device-key")
 os.environ.setdefault("SUPABASE_URL", "https://test.invalid")
@@ -69,7 +64,6 @@ def _make_dispatcher():
 async def test_capture_image_is_handled_locally_not_on_mqtt():
     """CAPTURE_IMAGE must be handled on the Pi and never forwarded over MQTT."""
     dispatcher, mqtt, camera, _storage, _ws_send = _make_dispatcher()
-    # Make the local capture short-circuit; we only assert it is NOT sent to MQTT.
     camera.start.side_effect = CameraError("camera unavailable in test")
 
     await dispatcher.dispatch(
@@ -86,7 +80,7 @@ async def test_capture_image_is_handled_locally_not_on_mqtt():
 async def test_esp32_command_is_forwarded_to_mqtt():
     """An ESP32 command type is published once with the contracted payload shape."""
     dispatcher, mqtt, _camera, _storage, ws_send = _make_dispatcher()
-    mqtt.publish_command.return_value = True  # publish succeeded -> no failure ack
+    mqtt.publish_command.return_value = True
 
     assert protocol.CMD_SET_MODE in protocol.ESP32_COMMAND_TYPES
     args = {"mode": "AUTO"}
@@ -105,7 +99,7 @@ async def test_esp32_command_is_forwarded_to_mqtt():
             "payload": args,
         }
     )
-    ws_send.assert_not_awaited()  # successful forward sends no command_ack
+    ws_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

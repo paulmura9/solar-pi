@@ -17,20 +17,15 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-# Source quadrilateral (TL, TR, BR, BL) of the panel in full-frame pixels.
-# Calibrated on the dataset camera position; recalibrate if the camera moves.
 PANEL_PTS = np.float32([[550, 35], [2140, 140], [2300, 1115], [535, 1290]])
 
-# Straightened output size (the surface analysis works at this resolution).
 WARP_W, WARP_H = 600, 400
 DST_PTS = np.float32([[0, 0], [WARP_W, 0], [WARP_W, WARP_H], [0, WARP_H]])
 M = cv2.getPerspectiveTransform(PANEL_PTS, DST_PTS)
 
-# TFLite model input contract (produced by prepare_for_tflite, validated in
-# vision.DirtDetector against the loaded model).
 TFLITE_INPUT_SIZE = 224
 INPUT_CHANNELS = 3
-PIXEL_MAX_VALUE = 255.0  # 8-bit images -> /255.0 maps [0,255] to [0.0,1.0]
+PIXEL_MAX_VALUE = 255.0
 EXPECTED_INPUT_SHAPE = (1, TFLITE_INPUT_SIZE, TFLITE_INPUT_SIZE, INPUT_CHANNELS)
 
 

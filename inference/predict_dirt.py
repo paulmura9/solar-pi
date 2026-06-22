@@ -31,32 +31,16 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-# ai-edge-litert is the maintained replacement for the deprecated tflite-runtime.
 from ai_edge_litert.interpreter import Interpreter
 
-# Reuse the production preprocessing so this script stays aligned with the v4
-# model and the gateway. Make the sibling pi_gateway package importable when run
-# as a standalone script (python inference/predict_dirt.py) by adding the repo
-# root to sys.path before importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pi_gateway.preprocessing import EXPECTED_INPUT_SHAPE, prepare_for_tflite
 
-# --- Training-coupled constants (CONFIRM FROM COLAB) --------------------------
-
-# Class labels in the EXACT order the model's output neurons were trained on.
-# The argmax of the output vector indexes into this tuple, so a wrong order
-# silently mislabels every prediction. CONFIRM FROM COLAB that index 0 == clean,
-# 1 == slightly_dirty, 2 == dirty (matches dataset/capture_dataset.VALID_CLASSES).
 CLASS_LABELS = ("clean", "slightly_dirty", "dirty")
 
-# Whether the exported model's final layer emits raw logits (True) or already
-# applies softmax (False). Determines whether we softmax the output to obtain
-# probabilities; double-softmaxing distorts the reported confidence even though
-# the argmax is unchanged. CONFIRM FROM COLAB the model's output activation.
 MODEL_OUTPUT_IS_LOGITS = False
 
-# Default model location, overridable by --model or the DIRT_MODEL_PATH env var.
 MODEL_PATH_ENV_VAR = "DIRT_MODEL_PATH"
 DEFAULT_MODEL_PATH = "models/dirt_detection.tflite"
 
@@ -96,7 +80,7 @@ def _load_interpreter(model_path: Path) -> Interpreter:
     try:
         interpreter = Interpreter(model_path=str(model_path))
         interpreter.allocate_tensors()
-    except Exception as exc:  # corrupt/incompatible model file
+    except Exception as exc:
         raise SystemExit(f"failed to load TFLite model {model_path}: {exc}") from exc
 
     input_detail = interpreter.get_input_details()[0]
@@ -145,7 +129,7 @@ def _infer(interpreter: Interpreter, model_input: np.ndarray) -> Tuple[np.ndarra
     interpreter.invoke()
     elapsed_ms = (time.perf_counter() - started) * MS_PER_SECOND
 
-    raw_output = interpreter.get_tensor(output_index)[0]  # drop the batch dimension
+    raw_output = interpreter.get_tensor(output_index)[0]
     if raw_output.shape != (len(CLASS_LABELS),):
         raise SystemExit(
             f"model output has {raw_output.shape} values, expected {len(CLASS_LABELS)} "

@@ -91,8 +91,6 @@ class SolarGateway:
         ws_task = asyncio.create_task(self._ws.run())
         heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         cleanup_task = asyncio.create_task(self._cleanup_loop())
-        # The periodic dirt-detection loop only runs when the model is loaded
-        # (which already implies VISION_ENABLED and an open camera).
         vision_task: Optional[asyncio.Task[None]] = None
         if self._vision is not None:
             vision_task = asyncio.create_task(self._vision_loop())
@@ -101,8 +99,6 @@ class SolarGateway:
 
         log("info", "gateway_stopping")
 
-        # Signal then cancel: the event lets the WS loop exit cleanly if it is
-        # between iterations; cancel breaks it out of any reconnect sleep.
         self._ws.stop()
         ws_task.cancel()
         heartbeat_task.cancel()
@@ -205,12 +201,9 @@ class SolarGateway:
 
     async def _run_vision_cycle(self) -> None:
         """Run one capture+inference cycle. Never raises; logs and returns on error."""
-        if self._vision is None:  # defensive: the loop only starts when loaded
+        if self._vision is None:
             return
 
-        # Capture + upload share the manual-capture pipeline (same CameraManager
-        # lock serializes against manual captures; uploads under the "vision/"
-        # prefix). Bounded by the same timeout so a wedged capture cannot stall.
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -222,12 +215,6 @@ class SolarGateway:
             log("warning", "vision_capture_failed", error=str(exc))
             return
 
-        # Behave exactly like a successful manual capture: emit the
-        # camera_capture_result first (so the single captured/uploaded frame shows
-        # in the frontend's "Last Captured Image", which reads this message, not
-        # vision_results) using a generated command_id, reusing the same upload
-        # path and builder. Sent before inference so a failed model run still
-        # leaves the capture visible. The image_path is shared by both messages.
         command_id = str(uuid.uuid4())
         await send_capture_success(command_id, result, self._ws.send_or_buffer)
 
@@ -245,7 +232,7 @@ class SolarGateway:
             return
 
         if vision_result is None:
-            return  # quality gate blocked inference; already reported on the WS
+            return
 
         log(
             "info",

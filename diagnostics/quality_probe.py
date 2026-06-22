@@ -23,18 +23,11 @@ from typing import Iterator, Optional
 import cv2
 from picamera2 import Picamera2
 
-# --- Mirrors of pi_gateway/config.py (keep in sync) ---------------------------
-
-# Full-frame capture size and pixel format, matching the gateway/dataset tool:
-# picamera2 yields RGB-ordered arrays on this Pi, converted to BGR for OpenCV.
 CAPTURE_SIZE = (2304, 1296)
 CAMERA_PIXEL_FORMAT = "BGR888"
 
-# Fixed panel ROI (x, y, w, h) in full-frame pixels (config.DIRT_ROI_*).
 ROI_X, ROI_Y, ROI_W, ROI_H = 440, 40, 1850, 1220
 
-# Quality-gate thresholds (config.DIRT_QUALITY_*). Verdict order matches
-# check_frame_quality: too_dark -> too_bright -> not_panel -> low_detail.
 QUALITY_MIN_MEAN = 30
 QUALITY_MAX_MEAN = 220
 QUALITY_RED_DOMINANCE = 25

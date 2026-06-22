@@ -38,35 +38,24 @@ from typing import Any, Optional
 
 PROTOCOL_VERSION = 1
 
-# Inbound message types (Express -> Pi).
 MSG_TYPE_COMMAND = "command"
 MSG_TYPE_HEARTBEAT_ACK = "heartbeat_ack"
 MSG_TYPE_SERVER_SHUTDOWN = "server_shutting_down"
 
-# Outbound message types (Pi -> Express).
 MSG_TYPE_SYNC_REQUEST = "sync_request"
 MSG_TYPE_TELEMETRY = "telemetry"
 MSG_TYPE_ESP32_EVENT = "esp32_event"
 MSG_TYPE_HEARTBEAT = "heartbeat"
 MSG_TYPE_COMMAND_ACK = "command_ack"
-# Express routes the capture result only on this exact discriminator string.
 MSG_TYPE_CAPTURE_RESULT = "camera_capture_result"
-# Edge dirt-detection result (periodic ML loop + manual capture). Maps to the
-# vision_results table, which Express persists; the Pi never writes it directly.
 MSG_TYPE_VISION_RESULT = "vision_result"
 
-# device_commands.status values (the DB write is performed by Express).
-# STATUS_ACKNOWLEDGED is the ESP32-ACK / command_ack success value; the capture
-# result uses STATUS_CAPTURE_SUCCESS, which Express's success branch expects.
 STATUS_ACKNOWLEDGED = "ACKNOWLEDGED"
 STATUS_CAPTURE_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
 
-# Keys consumed directly from a raw ESP32 ACK; everything else is forwarded to
-# Express under ack_payload.
 _ACK_RESERVED_KEYS = frozenset({"commandId", "status", "message"})
 
-# device_commands.command_type vocabulary (UPPERCASE; see CLAUDE.md).
 CMD_SET_MODE = "SET_MODE"
 CMD_MOVE_PANEL = "MOVE_PANEL"
 CMD_RESET_POSITION = "RESET_POSITION"
@@ -75,8 +64,6 @@ CMD_START_TRACKING = "START_TRACKING"
 CMD_STOP_TRACKING = "STOP_TRACKING"
 CMD_CAPTURE_IMAGE = "CAPTURE_IMAGE"
 
-# Commands forwarded to the ESP32 over MQTT. CAPTURE_IMAGE is intentionally
-# excluded: it is handled locally on the Pi.
 ESP32_COMMAND_TYPES = frozenset(
     {
         CMD_SET_MODE,

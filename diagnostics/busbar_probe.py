@@ -32,20 +32,14 @@ from typing import Optional
 import cv2
 import numpy as np
 
-# warp_panel imports only cv2/numpy, so this does NOT pull in config/required-env.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pi_gateway.preprocessing import warp_panel
 
-# --- Mirrors of pi_gateway/config.py (keep in sync) ---------------------------
-# Mask construction in surface_analysis.build_surface_overlay.
 SURFACE_BLUR_KERNEL = 51
 SURFACE_DIFF_THRESHOLD = 25
-# Full-frame capture size/format, matching the gateway/dataset tool (camera mode).
 CAPTURE_SIZE = (2304, 1296)
 CAMERA_PIXEL_FORMAT = "BGR888"
 
-# Opening kernels to sweep (odd, ascending). Each erases structures thinner than
-# roughly its size; the right choice removes bus bars but spares real deposits.
 OPEN_KERNELS = (3, 5, 7, 9, 11, 13)
 
 OUT_DIR = Path(__file__).resolve().parent / "busbar_probe_out"
@@ -69,9 +63,6 @@ def _report(mask: np.ndarray) -> None:
         print("  empty mask - nothing to measure (check threshold / framing).")
         return
 
-    # Local thickness via distance transform: for a mask pixel, the distance to the
-    # nearest background pixel is half the local structure width, so 2*DT is the
-    # local thickness. Bus bars (thin) cluster at small thickness; deposits larger.
     dt = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
     thickness = 2.0 * dt[mask > 0]
     pcts = [50, 75, 90, 95, 99]
@@ -122,7 +113,7 @@ def _load_frame_bgr(image_path: Optional[str]) -> np.ndarray:
 
     try:
         from picamera2 import Picamera2
-    except Exception as exc:  # not on the Pi / picamera2 missing
+    except Exception as exc:
         raise SystemExit(
             f"no image path given and the camera is unavailable: {exc}\n"
             "pass a saved full-frame capture: python3 diagnostics/busbar_probe.py raw.jpg"
@@ -145,15 +136,12 @@ def _load_frame_bgr(image_path: Optional[str]) -> np.ndarray:
         camera.close()
     if frame is None or frame.size == 0:
         raise SystemExit("camera returned an empty frame.")
-    # picamera2 yields RGB-ordered arrays on this Pi; convert to BGR for OpenCV.
     return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
 
 def main() -> None:
     image_path = sys.argv[1] if len(sys.argv) > 1 else None
     frame_bgr = _load_frame_bgr(image_path)
-    # warp_panel returns RGB (model channel order); convert to BGR for the mask,
-    # exactly as vision._build_and_upload_overlay does before build_surface_overlay.
     panel_bgr = cv2.cvtColor(warp_panel(frame_bgr), cv2.COLOR_RGB2BGR)
     mask = _build_mask(panel_bgr)
     _report(mask)

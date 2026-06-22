@@ -35,39 +35,22 @@ from typing import Iterator
 import cv2
 from picamera2 import Picamera2
 
-# --- Named constants (no magic numbers) ---------------------------------------
-
-# The three labels the dirt-detection dataset is built from.
 VALID_CLASSES = ("clean", "slightly_dirty", "dirty")
 
-# picamera2 yields RGB-ordered arrays on this Pi; OpenCV needs BGR for encoding.
 CAMERA_PIXEL_FORMAT = "BGR888"
 
-# Capture size. The Pi 3B cannot allocate buffers for the IMX708 full sensor
-# readout (4608x2592 -> ENOMEM at camera start), so we use the 2x2-binned mode.
-# This is still the FULL field of view (no crop), just at lower resolution; the
-# ROI is applied later in preprocessing. Matches the gateway's CAMERA_RESOLUTION.
 CAPTURE_SIZE = (2304, 1296)
 
-# Higher than the gateway's live-capture quality (90): this is archival training
-# data that may be cropped/recompressed downstream, so we keep more detail now.
 DATASET_JPEG_QUALITY = 95
 
-# Compact, filesystem-safe UTC stamp for filenames. Microsecond precision so two
-# captures in the same second cannot collide on the same path.
 FILENAME_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%S_%fZ"
 
-# Manifest schema. Kept as a constant so the header and every row stay in sync.
 MANIFEST_COLUMNS = ("session_id", "class", "filename", "timestamp", "width", "height")
 
-# Layout, relative to this file: dataset/capture_dataset.py -> dataset/ is parent.
 _DATASET_ROOT = Path(__file__).resolve().parent
 RAW_ROOT = _DATASET_ROOT / "raw"
 MANIFEST_PATH = _DATASET_ROOT / "manifest.csv"
 
-# Characters allowed in a session_id so it maps safely to a directory name (no
-# path separators, traversal, or spaces). Validated rather than silently
-# rewritten, since the id is also recorded verbatim in the manifest.
 _SESSION_ID_ALLOWED = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."
 )
@@ -120,7 +103,7 @@ def _open_camera() -> Iterator[Picamera2]:
     """
     try:
         camera = Picamera2()
-    except Exception as exc:  # camera missing, busy, or driver error
+    except Exception as exc:
         raise SystemExit(f"camera unavailable: {exc}") from exc
 
     try:
@@ -190,7 +173,7 @@ def _run_session(camera: Picamera2, session_id: str, image_class: str) -> None:
         captured_at = datetime.now(timezone.utc)
         try:
             frame_bgr = _capture_bgr(camera)
-        except Exception as exc:  # one bad frame must not end the session
+        except Exception as exc:
             print(f"  capture failed, not saved: {exc}")
             continue
 
@@ -225,7 +208,6 @@ def main() -> None:
         with _open_camera() as camera:
             _run_session(camera, session_id, image_class)
     except KeyboardInterrupt:
-        # Clean exit: _open_camera's finally has already released the sensor.
         print("\ninterrupted; session ended.")
     print("done.")
 
