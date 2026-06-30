@@ -76,20 +76,31 @@ class MQTTBridge:
         return True
 
     def _on_connect(self, client, userdata, flags, reason_code, properties) -> None:
-        if reason_code == 0:
-            log("info", "mqtt_connected", host=self._host)
-            client.subscribe(
-                [
-                    (config.MQTT_TOPIC_TELEMETRY, config.MQTT_QOS_TELEMETRY),
-                    (config.MQTT_TOPIC_ACK, config.MQTT_QOS_ACK),
-                    (config.MQTT_TOPIC_EVENTS, config.MQTT_QOS_TELEMETRY),
-                ]
+        # paho 2.x VERSION2: reason_code is a ReasonCode, not an int.
+        if reason_code.is_failure:
+            log(
+                "error",
+                "mqtt_connect_failed",
+                reason_code=getattr(reason_code, "value", reason_code),
             )
-        else:
-            log("error", "mqtt_connect_failed", reason_code=int(reason_code))
+            return
+        log("info", "mqtt_connected", host=self._host)
+        client.subscribe(
+            [
+                (config.MQTT_TOPIC_TELEMETRY, config.MQTT_QOS_TELEMETRY),
+                (config.MQTT_TOPIC_ACK, config.MQTT_QOS_ACK),
+                (config.MQTT_TOPIC_EVENTS, config.MQTT_QOS_TELEMETRY),
+            ]
+        )
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties) -> None:
-        log("warning", "mqtt_disconnected", reason_code=int(reason_code))
+        # paho 2.x VERSION2: reason_code is a ReasonCode; never int() it here so a
+        # logging/formatting error can't crash the disconnect handler.
+        log(
+            "warning",
+            "mqtt_disconnected",
+            reason_code=getattr(reason_code, "value", reason_code),
+        )
 
     def _on_message(self, client, userdata, msg: mqtt.MQTTMessage) -> None:
         if self._loop is None or not self._loop.is_running():
