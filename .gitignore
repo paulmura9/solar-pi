@@ -17,10 +17,6 @@ buffer.db
 # tracked so the dataset's contents are versioned without the binary payload.
 dataset/raw/
 
-.claude/
-.mcp.json
-CLAUDE.md
-SKILL.md
-AGENTS.md
+
 
 .gitattributes
