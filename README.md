@@ -1,105 +1,187 @@
-# Solar Pi Gateway
+# LightTrack — Raspberry Pi Edge Gateway (`solar-pi`)
 
-Python edge gateway that runs on a Raspberry Pi 3B and bridges the local device
-network and the cloud backend. It is the Raspberry Pi component of LightTrack, a
-bachelor's thesis project for monitoring a solar panel. LightTrack is a
-four-layer system — ESP32 firmware, this Raspberry Pi gateway, an Express
-(Railway) and Supabase cloud backend, and a Next.js dashboard — and this
-repository is the edge-gateway layer. The gateway relays telemetry and commands
-between an ESP32 on the local network and the Express backend in the cloud, and
-runs the on-device camera pipeline for dirt detection.
+## 1. Project
 
-## Architecture
+`solar-pi` is the Raspberry Pi edge gateway of **LightTrack**, a dual-axis solar
+tracker with camera-based dirt detection. It is written in Python and runs on a
+Raspberry Pi 3B.
 
-The Pi hosts a local Mosquitto MQTT broker (username/password authenticated)
-that the ESP32 connects to; this broker is never exposed publicly. This gateway
-process connects to the broker as a client and to the Express backend over a
-persistent, API-key-authenticated WebSocket (the `/ws/device` endpoint). Sensor
-telemetry and ESP32 acknowledgements/events received over MQTT are forwarded up
-to Express over the WebSocket; commands coming back from Express over the same
-WebSocket are relayed down to the ESP32 over MQTT. The gateway also owns the
-camera and runs the dirt-detection pipeline locally on the Pi, uploading images
-to Supabase Storage over HTTPS. The Pi has Storage access only and never talks to
-the database directly.
+LightTrack is a four-layer system:
 
-A SQLite offline buffer holds messages while the WebSocket is down, the client
-reconnects with exponential backoff, and a heartbeat is sent every 30 seconds.
+1. an **ESP32** that drives the two servos and reads the sensors (firmware),
+2. **this Raspberry Pi gateway** (the edge layer),
+3. an **Express + Supabase** cloud backend, and
+4. a **Next.js** web dashboard.
 
-## Camera pipeline
+The gateway sits in the middle and connects the local hardware to the cloud. On
+one side it talks to the ESP32 over a **local MQTT broker** (Mosquitto, running on
+the Pi, never exposed to the internet). On the other side it keeps a persistent,
+API-key-authenticated **WebSocket** connection to the Express backend. It also
+owns the Pi camera and runs the **dirt-detection pipeline locally**, uploading the
+resulting images to Supabase Storage over HTTPS.
 
-Frames are captured with picamera2 through a single `CameraManager` that returns
-one full-resolution BGR frame per capture.
+**Main features**
 
-Before any model runs, each frame passes a quality gate (`check_frame_quality`
-in `vision.py`). The gate samples a fixed panel region and rejects frames that
-are too dark, too bright, not the panel (skin or another object covering the
-dark-blue panel), or too low in detail. Rejected frames are reported without a
-model prediction.
+- **MQTT ↔ WebSocket bridge.** Telemetry, ESP32 acknowledgements and device
+  events arrive over MQTT and are forwarded up to the backend over the WebSocket.
+  Commands coming down from the backend over the WebSocket are relayed to the
+  ESP32 over MQTT.
+- **SQLite offline buffer with reconnect and heartbeat.** When the WebSocket is
+  down, outgoing messages are stored in a local SQLite buffer instead of being
+  lost. The client reconnects automatically with exponential backoff, flushes the
+  buffered messages once it is back online, and sends a heartbeat every 30
+  seconds so the backend knows the Pi is alive.
+- **Camera dirt-detection pipeline**, running entirely on the Pi:
+  - a **quality gate** rejects unusable frames before the model runs (too dark,
+    too bright, an object covering the panel, or too little detail);
+  - a **TFLite model** classifies the panel into three classes —
+    `clean`, `slightly_dirty`, `dirty` — which are turned into a dirt level and a
+    cleanliness percentage;
+  - **perspective-warp preprocessing** straightens the side-on view of the panel
+    before inference, using the exact same transform the model was trained with;
+  - a **surface overlay** (classical image processing) highlights likely dirt
+    zones on the straightened image, as a visual aid for the operator — it does
+    not affect the model's decision;
+  - the captured frame and the overlay are **uploaded to Supabase Storage**, and
+    only the result metadata is sent to the backend over the WebSocket.
 
-Dirt detection uses a TFLite model loaded once at startup (via `ai-edge-litert`,
-the maintained successor to `tflite-runtime`). Preprocessing applies a fixed
-perspective warp that straightens the side-on view of the panel
-(`preprocessing.py`), then resizes to 224x224 and normalizes to `[0, 1]`. This
-transform must stay identical to the one used to train the model. The model
-outputs a softmax over three classes — `clean`, `slightly_dirty`, `dirty` — which
-are collapsed into a 0..100 dirt level and a cleanliness percentage.
+The dirt-detection loop and any manual capture share a single camera through one
+lock, so the camera is never opened by two code paths at the same time.
 
-`surface_analysis.py` produces an auxiliary OpenCV overlay that highlights likely
-surface-deposit zones on the straightened panel image. It is a classical
-image-processing estimate for the operator and does not feed the model's
-decision; the predicted class and percentages come solely from the model.
+## 2. Deliverables / Repository
 
-Captured frames and the overlay are uploaded to Supabase Storage, and the result
-metadata is sent to the backend over the WebSocket.
+- **Repository:** `<https://gitlab.upt.ro/...>`
 
-## Tech stack
+This repository is the **full source code** of the gateway. It contains **no
+compiled binaries** and no build artifacts. Python is an interpreted language, so
+there is **no compilation step** — the code runs directly.
 
-- Python
-- paho-mqtt (`paho-mqtt`) with a local Mosquitto broker
-- picamera2
-- OpenCV (system package `python3-opencv`)
-- TFLite runtime via `ai-edge-litert`
-- Supabase Python client (Storage only)
-- websockets (persistent client to the Express backend)
-- systemd service (`solar-gateway.service`) in production
+The following are intentionally **not committed** to the repository (they are
+generated or provided on the Pi):
 
-## Data flow
+- `venv/` — the Python virtual environment (created during installation),
+- `.env` — the local configuration file with the secrets,
+- `models/*.tflite` — the trained dirt-detection model.
 
-ESP32 -> MQTT (local) -> this gateway -> WebSocket -> backend
+## 3. Requirements / Dependencies
 
-## Running
+**Python.** Python 3, using the **system Python 3 that ships with Raspberry Pi
+OS**. This matters because two required libraries (see below) are installed as
+system packages and are built against that specific interpreter.
 
-picamera2 and OpenCV come from the system, so create the virtual environment with
-access to system site packages, then install the remaining dependencies:
+**System packages (installed with `apt`).** Two dependencies are **not available
+on PyPI** and must come from the Raspberry Pi OS package manager:
+
+- `python3-opencv` — OpenCV for Python,
+- `python3-picamera2` — the `picamera2` camera library.
+
+Install them with:
+
+```bash
+sudo apt update
+sudo apt install python3-opencv python3-picamera2
+```
+
+(`numpy` is pulled in together with these system packages.)
+
+**Python packages (installed with `pip`).** From `requirements.txt`:
+
+- `paho-mqtt` — MQTT client for the local broker,
+- `supabase` — Supabase client (used only for Storage uploads),
+- `python-dotenv` — loads the `.env` configuration file,
+- `websockets` — the persistent client to the Express backend,
+- `ai-edge-litert` — the TFLite runtime used for dirt-detection inference (the
+  maintained successor to `tflite-runtime`).
+
+Test-only tools are kept separately in `requirements-dev.txt` (`pytest`,
+`pytest-asyncio`). They are **not** needed to run the gateway and are **not**
+installed on the Pi.
+
+## 4. Installation
+
+Run these steps on the Raspberry Pi, after installing the `apt` packages from
+Section 3.
+
+Create the virtual environment **with `--system-site-packages`**. This flag is
+required so the environment can see the system-installed `picamera2` and OpenCV,
+which cannot be installed through `pip`:
 
 ```bash
 python3 -m venv --system-site-packages venv
+```
+
+Activate the environment:
+
+```bash
 source venv/bin/activate
+```
+
+Install the Python dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-Configuration is centralized in `pi_gateway/config.py`, which reads its values
-from the environment (a `.env` file is loaded at startup). The required variables
-are `EXPRESS_WS_URL`, `DEVICE_API_KEY`, `SUPABASE_URL`, `SUPABASE_STORAGE_KEY`
-and `SUPABASE_STORAGE_BUCKET`; missing required values fail fast at startup. MQTT
-settings, the camera/vision tunables and the buffer location have defaults that
-can be overridden through the same environment.
+## 5. Configuration
 
-Run the gateway with:
+All configuration is read from environment variables at startup by
+`pi_gateway/config.py`, which loads a **`.env` file** placed in the project root.
+
+The **required** variables have no defaults — if any of them is missing, the
+gateway stops immediately at startup with a clear error:
+
+```ini
+# Required — the gateway will not start without these
+EXPRESS_WS_URL=
+DEVICE_API_KEY=
+SUPABASE_URL=
+SUPABASE_STORAGE_KEY=
+SUPABASE_STORAGE_BUCKET=
+```
+
+The **optional** variables all have sensible defaults and only need to be set to
+override them:
+
+```ini
+# Optional — shown with their default values
+DEVICE_ID=raspberry-pi-001
+MQTT_BROKER_HOST=localhost
+MQTT_BROKER_PORT=1883
+MQTT_USERNAME=
+MQTT_PASSWORD=
+BUFFER_DB_PATH=/var/lib/solar-tracker/buffer.db
+BUFFER_MAX_AGE_HOURS=24
+VISION_ENABLED=true
+VISION_CAPTURE_INTERVAL_S=1800
+DIRT_MODEL_PATH=models/dirt_detection.tflite
+```
+
+> Fill in your own values for the required variables. Never commit the `.env`
+> file — it is ignored by Git.
+
+## 6. Run / Launch
+
+With the virtual environment active, start the gateway from the project root:
 
 ```bash
 python gateway.py
 ```
 
-In production the gateway runs as a systemd unit (`solar-gateway.service`), which
-starts it on boot and restarts it automatically on failure.
+A convenience script, `run.sh`, does the same thing using the environment's
+Python directly.
 
-## Constraint: single camera instance
+**In production**, the gateway runs as a **systemd service** named
+`solar-gateway.service`. systemd starts it automatically on boot and restarts it
+if it ever exits, so the Pi keeps bridging the ESP32 and the cloud without manual
+intervention. Typical operator commands:
 
-The Pi camera is exclusive — only one process may hold it at a time. Within the
-gateway all captures are serialized through one `CameraManager` lock, so the
-periodic dirt-detection loop and manual captures never use the camera
-concurrently. To collect a dataset with a separate script while the gateway runs,
-start the gateway with `VISION_ENABLED=false` so it never opens the camera; every
-other path (WebSocket, MQTT, command forwarding, telemetry, heartbeat) keeps
-working.
+```bash
+sudo systemctl restart solar-gateway   # restart the service
+journalctl -u solar-gateway -f         # follow the live logs
+```
+
+**Freeing the camera for dataset collection.** Set `VISION_ENABLED=false` to start
+the gateway **without opening the camera**. The dirt-detection loop is then
+disabled, so a separate script can use the camera to collect training images,
+while everything else — the WebSocket link, MQTT bridging, command forwarding,
+telemetry and heartbeat — keeps working normally.
